@@ -157,6 +157,12 @@ export interface ToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
+/** Sortie structurée : le modèle doit répondre conforme à ce JSON Schema. */
+export interface StructuredFormat {
+  /** JSON Schema (draft 2020-12) de la réponse attendue. */
+  schema: Record<string, unknown>;
+}
+
 export interface CompletionRequest {
   model: string;
   /** Piloté par le routeur ; ignoré pour les modèles sans effort. */
@@ -165,6 +171,8 @@ export interface CompletionRequest {
   messages: Message[];
   tools?: ToolDefinition[];
   maxTokens?: number;
+  /** Si présent, force une réponse JSON conforme (structured outputs). */
+  format?: StructuredFormat;
 }
 
 export interface Usage {

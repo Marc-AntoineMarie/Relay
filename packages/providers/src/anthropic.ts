@@ -113,12 +113,22 @@ export class AnthropicProvider implements Provider {
       }));
     }
 
-    // Effort + thinking : seulement sur les modèles qui les supportent.
+    // output_config regroupe effort + format structuré.
+    const outputConfig: Anthropic.OutputConfig = {};
+
+    // Effort + thinking : seulement sur les modèles qui les supportent (Haiku exclu).
     if (spec?.supportsEffort === true) {
       params.thinking = { type: "adaptive" };
-      if (request.effort !== undefined) {
-        params.output_config = { effort: request.effort };
-      }
+      if (request.effort !== undefined) outputConfig.effort = request.effort;
+    }
+
+    // Sortie structurée : indépendante du modèle.
+    if (request.format !== undefined) {
+      outputConfig.format = { type: "json_schema", schema: request.format.schema };
+    }
+
+    if (outputConfig.effort !== undefined || outputConfig.format !== undefined) {
+      params.output_config = outputConfig;
     }
 
     const stream = this.client.messages.stream(params);
