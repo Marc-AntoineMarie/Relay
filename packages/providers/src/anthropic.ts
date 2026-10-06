@@ -9,48 +9,8 @@
  *     structured outputs, hors de cet adaptateur).
  */
 import Anthropic from "@anthropic-ai/sdk";
+import { defaultRegistry, ModelRegistry } from "@relay/core";
 import type { CompletionChunk, CompletionRequest, ModelInfo, Provider } from "@relay/core";
-
-/** Prix ($/1M tokens) et capacités par modèle. Source : tarifs API Anthropic. */
-interface ModelSpec {
-  inputPerM: number;
-  outputPerM: number;
-  contextWindow: number;
-  maxOutputTokens: number;
-  /** Haiku 4.5 ne supporte ni `effort` ni le thinking adaptatif. */
-  supportsEffort: boolean;
-}
-
-const MODELS: Record<string, ModelSpec> = {
-  "claude-haiku-4-5": {
-    inputPerM: 1,
-    outputPerM: 5,
-    contextWindow: 200_000,
-    maxOutputTokens: 64_000,
-    supportsEffort: false,
-  },
-  "claude-sonnet-5-5": {
-    inputPerM: 2,
-    outputPerM: 10,
-    contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
-    supportsEffort: true,
-  },
-  "claude-opus-5-5": {
-    inputPerM: 4,
-    outputPerM: 20,
-    contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
-    supportsEffort: true,
-  },
-  "claude-fable-5-1": {
-    inputPerM: 10,
-    outputPerM: 50,
-    contextWindow: 1_000_000,
-    maxOutputTokens: 128_000,
-    supportsEffort: true,
-  },
-};
 
 /** max_tokens par défaut (streaming) quand la requête n'en précise pas. */
 const DEFAULT_MAX_TOKENS = 16_000;
@@ -58,30 +18,32 @@ const DEFAULT_MAX_TOKENS = 16_000;
 export interface AnthropicProviderOptions {
   /** Par défaut : variable d'env ANTHROPIC_API_KEY (lue par le SDK). */
   apiKey?: string;
+  /** Registre de modèles (prix, capacités). Par défaut : le registre central. */
+  registry?: ModelRegistry;
 }
 
 export class AnthropicProvider implements Provider {
   readonly name = "anthropic";
   private readonly client: Anthropic;
+  private readonly registry: ModelRegistry;
 
   constructor(options: AnthropicProviderOptions = {}) {
     this.client = new Anthropic(
       options.apiKey === undefined ? {} : { apiKey: options.apiKey },
     );
+    this.registry = options.registry ?? defaultRegistry;
   }
 
   async models(): Promise<ModelInfo[]> {
-    return Object.entries(MODELS).map(([id, spec]) => ({
-      id,
-      contextWindow: spec.contextWindow,
-      maxOutputTokens: spec.maxOutputTokens,
+    return this.registry.byProvider("anthropic").map((e) => ({
+      id: e.id,
+      contextWindow: e.contextWindow,
+      maxOutputTokens: e.maxOutputTokens,
     }));
   }
 
   estimateCost(model: string, inputTokens: number, outputTokens: number): number {
-    const spec = MODELS[model];
-    if (spec === undefined) return 0;
-    return (inputTokens / 1_000_000) * spec.inputPerM + (outputTokens / 1_000_000) * spec.outputPerM;
+    return this.registry.estimateCost(model, inputTokens, outputTokens);
   }
 
   async countTokens(request: CompletionRequest): Promise<number> {
@@ -95,7 +57,7 @@ export class AnthropicProvider implements Provider {
   }
 
   async *complete(request: CompletionRequest): AsyncIterable<CompletionChunk> {
-    const spec = MODELS[request.model];
+    const spec = this.registry.get(request.model);
     const { system, messages } = splitMessages(request);
 
     const params: Anthropic.MessageStreamParams = {

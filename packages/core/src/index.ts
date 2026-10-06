@@ -7,4 +7,6 @@
 export const CORE_VERSION = "0.1.0";
 
 export type * from "./types.js";
+export * from "./registry.js";
 export * from "./decomposer/index.js";
+export * from "./router/index.js";
