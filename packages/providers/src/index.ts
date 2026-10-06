@@ -3,7 +3,8 @@
  *
  * v0.1 : Anthropic (Haiku, Sonnet, Opus, Fable).
  * v0.2+ : OpenAI, Ollama. v0.3+ : OpenRouter.
- *
- * L'adaptateur Anthropic (`anthropic.ts`) arrive à l'étape 3.
  */
 export const PROVIDERS_VERSION = "0.1.0";
+
+export { AnthropicProvider } from "./anthropic.js";
+export type { AnthropicProviderOptions } from "./anthropic.js";
