@@ -1,0 +1,30 @@
+# Dépendances
+node_modules/
+.pnpm-store/
+
+# Build
+dist/
+*.tsbuildinfo
+
+# Env & secrets
+.env
+.env.local
+*.local
+
+# Métriques locales (v0.2+)
+*.sqlite
+*.sqlite-journal
+.relay/
+
+# Logs
+*.log
+logs/
+
+# OS / éditeurs
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# Couverture de tests
+coverage/
