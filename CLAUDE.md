@@ -64,9 +64,18 @@ Voir [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) pour le détail complet.
 
 L'abstraction `Provider` isole le moteur des API. Priorité :
 1. Anthropic (v0.1) — Haiku, Sonnet, Opus, Fable
-2. OpenAI (v0.2) — Luna, Sol, Astra
+2. OpenAI (v0.2) — gamme GPT
 3. Ollama (v0.2) — modèles locaux gratuits
-4. OpenRouter (v0.3) — tous modèles, tarification à l'usage
+4. Google Gemini (v0.2–v0.3) — gamme Gemini, palier gratuit
+5. Perplexity (v0.3) — Sonar
+6. OpenRouter (v0.3) — tous modèles, **fallback only** (marge)
+
+**Règle multi-fournisseurs** (détail : [docs/PROVIDERS.md](docs/PROVIDERS.md)) :
+appel **direct** à chaque API native avec la **clé de l'utilisateur** → prix exact,
+**zéro marge**. Pas d'agrégateur par défaut. Les **abonnements grand public**
+(ChatGPT Plus, Gemini Advanced…) ne sont **pas** routables (pas d'API, contre CGU) :
+« connecter un compte » = coller une clé API. Le choix de route reste **local et
+quasi-gratuit** (registre + heuristique, jamais un gros appel LLM).
 
 ## Dépendances
 

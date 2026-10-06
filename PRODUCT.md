@@ -29,6 +29,9 @@ L'utilisateur voit tout en temps réel — comme Claude Code mais avec le routin
 - **Configurable** — routes, modèles, seuils, tout est modifiable.
 - **Mesurable** — métriques claires, analyse automatique des gains et des pertes.
 - **Multi-plateforme** — bureau, web, mobile, même expérience partout.
+- **Multi-modèles, zéro marge** — tous fournisseurs via leurs **API natives** et les
+  **clés de l'utilisateur** ; appels directs, pas de marge d'agrégateur, pas
+  d'abonnement grand public routé (non supporté). Voir [docs/PROVIDERS.md](docs/PROVIDERS.md).
 - **Honnête** — afficher les économies réelles, pas des simulations optimistes.
 
 ## Public cible
@@ -62,7 +65,8 @@ Le strict minimum pour prouver que le concept marche.
 
 ### v0.2.0 — Multi-providers + parallélisme
 
-- Providers : OpenAI (Luna/Sol/Astra), Ollama (local)
+- Providers : OpenAI, Ollama (local, gratuit), Google Gemini (palier gratuit) — appels
+  directs, clés de l'utilisateur, zéro marge (voir [docs/PROVIDERS.md](docs/PROVIDERS.md))
 - Exécution parallèle des tâches indépendantes dans le DAG
 - Escalade automatique : effort d'abord, modèle ensuite
 - Vérificateur intégré (tests, types, lint)

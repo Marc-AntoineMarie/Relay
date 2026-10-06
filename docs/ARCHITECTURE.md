@@ -238,6 +238,15 @@ avant de continuer.
 
 Lit la configuration des routes et assigne modèle + effort à chaque tâche.
 
+**Multi-fournisseurs** (détail : [PROVIDERS.md](PROVIDERS.md)) : le routeur s'appuie sur
+un **registre de modèles** `{ provider, prix in/out, contexte, forces par type, clé
+présente ? }` et applique une politique « **compétent ET moins cher** » : filtrer les
+modèles disponibles capables du type/tier requis, puis prendre le moins coûtant (le
+gratuit — Ollama local, paliers gratuits — gagne pour `quick`). Appels **directs** aux
+API natives avec les clés de l'utilisateur, **zéro marge** ; la décision reste locale et
+bon marché. L'embryon du registre est `MODELS` dans `providers/src/anthropic.ts`, à
+extraire dans `core` à l'arrivée du 2ᵉ fournisseur.
+
 **Configuration :** fichier `relay.config.json` à la racine du projet ou
 `~/.relay/config.json` en global.
 
