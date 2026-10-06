@@ -10,3 +10,5 @@ export type * from "./types.js";
 export * from "./registry.js";
 export * from "./decomposer/index.js";
 export * from "./router/index.js";
+export * from "./executor/index.js";
+export * from "./metrics/index.js";
