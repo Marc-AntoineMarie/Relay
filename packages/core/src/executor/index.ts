@@ -11,7 +11,7 @@
  * elle est escaladée une fois vers un modèle plus fort.
  */
 import { referenceCost } from "../catalog.js";
-import { describeError, ProviderRequestError, shouldTryAnotherModel } from "../errors.js";
+import { describeError, ProviderRequestError, retryDelayMs, shouldTryAnotherModel } from "../errors.js";
 import { computePipelineMetrics } from "../metrics/index.js";
 import { buildWorkerPrompt } from "../decomposer/system-prompt.js";
 import { candidateKey, manualRouting, type RouteCandidate, type TaskRouting } from "../router/auto.js";
@@ -35,7 +35,9 @@ const WORKER_SYSTEM =
 /** Budget large : les modèles « thinking » consomment une partie de max_tokens en réflexion. */
 const DEFAULT_WORKER_MAX_TOKENS = 16_000;
 /** Nombre max de modèles essayés pour une même tâche. */
-const MAX_ROUTE_ATTEMPTS = 3;
+const MAX_ROUTE_ATTEMPTS = 5;
+/** Tous les modèles saturés : attente max d'un délai annoncé (« réessaie dans 17 s ») avant un dernier essai. */
+const MAX_RATE_WAIT_MS = 30_000;
 /** Référence de la baseline « tout sur le modèle le plus fort » quand rien d'autre n'est fourni. */
 const DEFAULT_BASELINE_MODEL = "claude-opus-5-5";
 
@@ -176,8 +178,11 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
 
     // 1. Premier choix, puis replis si le fournisseur échoue.
     let failure: unknown;
+    let lastTried = first;
+    const waitable: Array<{ c: RouteCandidate; delay: number }> = [];
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i] as RouteCandidate;
+      lastTried = c;
       const outcome = yield* attempt(task, c, prompt, routing, runTask);
       if ("result" in outcome) {
         attempts.push(outcome);
@@ -185,6 +190,10 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
         break;
       }
       failure = outcome.error;
+      if (outcome.error instanceof ProviderRequestError && outcome.error.kind === "rate_limited") {
+        const delay = retryDelayMs(outcome.error);
+        if (delay !== undefined && delay <= MAX_RATE_WAIT_MS) waitable.push({ c, delay });
+      }
       const next = candidates[i + 1];
       if (next !== undefined && outcome.error instanceof ProviderRequestError && shouldTryAnotherModel(outcome.error)) {
         const d = describeError(outcome.error);
@@ -200,11 +209,29 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
       break;
     }
 
+    // Tout est saturé, mais un fournisseur a dit quand réessayer (limite par minute) : on patiente.
+    const patient = waitable.sort((a, b) => a.delay - b.delay)[0];
+    if (attempts.length === 0 && patient !== undefined && !aborted(opts.signal)) {
+      yield log({
+        level: "warn",
+        category: "fallback",
+        taskId: task.id,
+        title: `#${task.id} tous les modèles sont saturés → pause ${Math.ceil(patient.delay / 1000)} s puis nouvel essai sur ${patient.c.provider} · ${patient.c.model}`,
+      });
+      await sleep(patient.delay + 1_000, opts.signal);
+      if (!aborted(opts.signal)) {
+        lastTried = patient.c;
+        const outcome = yield* attempt(task, patient.c, prompt, routing, runTask);
+        if ("result" in outcome) attempts.push(outcome);
+        else failure = outcome.error;
+      }
+    }
+
     const firstSuccess = attempts[0];
     if (firstSuccess === undefined) {
       const description = describeError(failure);
       const error = `${description.title} — ${description.detail}`;
-      const metrics = failMetrics(task, candidates.at(-1) ?? first, started);
+      const metrics = failMetrics(task, lastTried, started);
       task.status = "failed";
       task.attempts.push({ model: metrics.model, ...(metrics.effort !== undefined ? { effort: metrics.effort } : {}), success: false, metrics, error });
       taskMetrics.push(metrics);
@@ -333,6 +360,12 @@ async function* attempt(
     result = yield* streamWhile((emit) => runTask({ task, request, provider, emit, onChunk: (t) => chunks.push(t) }));
   } catch (err) {
     routing.report?.(c, err instanceof ProviderRequestError ? err : undefined);
+    return { error: err };
+  }
+  if (result.text.trim().length === 0) {
+    // Réponse vide (tout parti en réflexion…) : inutilisable, un autre modèle prendra le relais.
+    const err = new ProviderRequestError("invalid_output", "réponse vide (aucun texte produit)", c.provider, c.model);
+    routing.report?.(c, err);
     return { error: err };
   }
   routing.report?.(c);
@@ -567,6 +600,22 @@ function buildTaskPrompt(pipeline: Pipeline, task: Task): string {
     projectContext,
     ...(pipeline.contracts !== undefined ? { contracts: pipeline.contracts } : {}),
     ...(task.spec !== undefined ? { spec: task.spec } : {}),
+  });
+}
+
+/** Fonction (et non test direct) : l'état change pendant les `await`. */
+const aborted = (signal?: AbortSignal): boolean => signal?.aborted === true;
+
+/** Attente interrompue par l'arrêt du pipeline. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done(): void {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
   });
 }
 

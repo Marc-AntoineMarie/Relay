@@ -10,7 +10,7 @@
  * qualité, santé récente — pondérés par la stratégie.
  */
 import { CAPABILITY_LABEL, profileModel } from "../catalog.js";
-import type { ProviderRequestError } from "../errors.js";
+import { retryDelayMs, type ProviderRequestError } from "../errors.js";
 import type { BillingMode, Capability, Effort, Provider, RouteTier, Task } from "../types.js";
 import type { HealthTracker } from "./health.js";
 import type { Router } from "./index.js";
@@ -67,7 +67,7 @@ export const candidateKey = (c: { provider: string; model: string }): string => 
 const LEVEL: Record<RouteTier, number> = { quick: 0, build: 1, deep: 2 };
 const EFFORT: Record<RouteTier, Effort> = { quick: "low", build: "medium", deep: "high" };
 const SPEED = { fast: 0, normal: 0.5, slow: 1 } as const;
-const HEALTH_PENALTY: Record<string, number> = { overloaded: 4, timeout: 4, rate_limited: 6, network: 3 };
+const HEALTH_PENALTY: Record<string, number> = { overloaded: 4, timeout: 4, rate_limited: 6, network: 3, invalid_output: 3 };
 /** Assez grand pour qu'un modèle sous-dimensionné passe après tous ceux du bon niveau. */
 const DEGRADED_PENALTY = 100;
 const HEALTH_LABEL: Record<string, string> = {
@@ -75,6 +75,7 @@ const HEALTH_LABEL: Record<string, string> = {
   timeout: "lent à répondre",
   rate_limited: "quota atteint",
   network: "injoignable",
+  invalid_output: "réponses inutilisables",
 };
 
 interface Weights {
@@ -195,7 +196,9 @@ export function autoRouting(
     onUse: (c) => router.consume(c.provider),
     onCost: (_c, cost) => router.spend(cost),
     report: (c, error) =>
-      error !== undefined ? health?.reportFailure(c.provider, c.model, error.kind) : health?.reportSuccess(c.provider, c.model),
+      error !== undefined
+        ? health?.reportFailure(c.provider, c.model, error.kind, Date.now(), retryDelayMs(error))
+        : health?.reportSuccess(c.provider, c.model),
     escalate: (task, tried) =>
       router
         .rank({ tier: NEXT_TIER[task.tier], ...(task.needs !== undefined ? { needs: task.needs } : {}) })

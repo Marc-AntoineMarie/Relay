@@ -7,6 +7,7 @@ import { execute } from "../src/executor/index.js";
 import { defaultRegistry } from "../src/registry.js";
 import type { RouteCandidate, TaskRouting } from "../src/router/auto.js";
 import type { CompletionRequest, Pipeline, PipelineEvent, Provider, Task } from "../src/types.js";
+import { kindFromStatus, ProviderRequestError, retryDelayMs } from "../src/errors.js";
 import { checkCommand, runCommand } from "../src/workspace/commands.js";
 import { condense, parseActions } from "../src/workspace/protocol.js";
 import { Workspace, WorkspaceError } from "../src/workspace/workspace.js";
@@ -67,6 +68,23 @@ describe("protocole d'action", () => {
     expect(a.reads).toEqual(["README.md"]);
     expect(condense(text)).toContain("[fichier écrit : calc.py]");
     expect(condense(text)).not.toContain("def add");
+  });
+
+  it("blocs vides consécutifs, ===END=== oublié, réponse coupée", () => {
+    // Cas réel (Gemini lite) : trois fichiers vides d'affilée.
+    const empties = parseActions("===FILE: a.py===\n===END===\n===FILE: b.py===\n===END===\n===FILE: c.md===\n===END===");
+    expect(empties.files).toEqual([
+      { path: "a.py", content: "" },
+      { path: "b.py", content: "" },
+      { path: "c.md", content: "" },
+    ]);
+    const forgot = parseActions("===FILE: a.py===\nx = 1\n===FILE: b.py===\ny = 2\n===END===\n===FILE: c.py===\nz = ");
+    expect(forgot.files).toEqual([
+      { path: "a.py", content: "x = 1\n" },
+      { path: "b.py", content: "y = 2\n" },
+    ]);
+    expect(forgot.incomplete).toEqual(["c.py"]);
+    expect(condense("avant\n===FILE: c.py===\nz =")).toBe("avant\n[fichier incomplet, non écrit : c.py]");
   });
 });
 
@@ -150,6 +168,13 @@ async function collect(gen: AsyncGenerator<PipelineEvent>): Promise<PipelineEven
   return out;
 }
 
+describe("réponses inutilisables", () => {
+  it("un appel d'outil inventé (gpt-oss sur Groq) déclenche un repli", () => {
+    expect(kindFromStatus(undefined, "Tool choice is none, but model called a tool")).toBe("invalid_output");
+    expect(kindFromStatus(400, '{"error":{"code":"tool_use_failed"}}')).toBe("invalid_output");
+  });
+});
+
 describe("worker agentique", () => {
   it("écrit les fichiers, lance la vérification, corrige après un échec", async () => {
     const ws = new Workspace(dir);
@@ -221,6 +246,37 @@ describe("worker agentique", () => {
     expect(asked).toEqual(["echo bonjour"]);
     const done = events.find((e) => e.type === "command:done");
     expect(done?.type === "command:done" && done.output).toBe("bonjour\n");
+  });
+
+  it("relance une tâche qui décrit son travail sans écrire de fichier", async () => {
+    const provider = scripted((_req, turn) =>
+      turn === 0 ? "J'ai implémenté la classe Calculator." : "===FILE: calc.py===\nclass Calculator: ...\n===END===\nÉcrit.",
+    );
+    const events = await collect(execute({ pipeline: pipeline(dir), routing: routing(provider, ["m1"]), runTask: agenticRunTask({ workspace: new Workspace(dir), policy: "safe" }) }));
+    expect(readFileSync(join(dir, "calc.py"), "utf8")).toBe("class Calculator: ...\n");
+    expect(events.some((e) => e.type === "log" && e.entry.title.includes("aucune action"))).toBe(true);
+  });
+
+  it("réponse vide : passe au modèle suivant", async () => {
+    const provider = scripted((req) => (req.model === "bavard" ? "===FILE: ok.txt===\nok\n===END===\nFait." : ""));
+    const events = await collect(
+      execute({ pipeline: pipeline(dir), routing: routing(provider, ["muet", "bavard"]), runTask: agenticRunTask({ workspace: new Workspace(dir), policy: "safe" }) }),
+    );
+    expect(events.some((e) => e.type === "log" && e.entry.category === "fallback" && e.entry.title.includes("muet"))).toBe(true);
+    const done = events.find((e) => e.type === "task:done");
+    expect(done?.type === "task:done" && done.metrics.model).toBe("bavard");
+  });
+
+  it("tout est saturé avec un délai annoncé : patiente puis réessaie", async () => {
+    let calls = 0;
+    const provider = scripted(() => {
+      if (calls++ === 0) throw new ProviderRequestError("rate_limited", "Rate limit reached. Please try again in 0.05s.", "fake", "m1", 429);
+      return "===FILE: ok.txt===\nok\n===END===\nFait.";
+    });
+    const events = await collect(execute({ pipeline: pipeline(dir), routing: routing(provider, ["m1"]), runTask: agenticRunTask({ workspace: new Workspace(dir), policy: "safe" }) }));
+    expect(events.some((e) => e.type === "log" && e.entry.title.includes("pause"))).toBe(true);
+    expect(events.at(-1)?.type).toBe("pipeline:done");
+    expect(retryDelayMs(new ProviderRequestError("rate_limited", '"retryDelay": "41s"', "g"))).toBe(41_000);
   });
 
   it("escalade vers un modèle plus fort si les vérifications échouent encore", async () => {

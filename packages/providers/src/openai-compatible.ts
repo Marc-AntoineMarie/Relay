@@ -211,5 +211,6 @@ export function toProviderError(err: unknown, provider: string, model?: string):
   if (err instanceof OpenAI.APIError) {
     return new ProviderRequestError(kindFromStatus(err.status, err.message), err.message, provider, model, err.status);
   }
-  return new ProviderRequestError("unknown", err instanceof Error ? err.message : String(err), provider, model);
+  const message = err instanceof Error ? err.message : String(err);
+  return new ProviderRequestError(kindFromStatus(undefined, message), message, provider, model);
 }

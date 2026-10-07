@@ -12,13 +12,16 @@ const WINDOW_MS: Partial<Record<ErrorKind, number>> = {
   rate_limited: 10 * 60_000,
   model_not_found: 60 * 60_000,
   auth: 60 * 60_000,
+  invalid_output: 10 * 60_000,
 };
 
 export class HealthTracker {
-  private readonly marks = new Map<string, { kind: ErrorKind; at: number }>();
+  private readonly marks = new Map<string, { kind: ErrorKind; until: number }>();
 
-  reportFailure(provider: string, model: string, kind: ErrorKind, now = Date.now()): void {
-    if (WINDOW_MS[kind] !== undefined) this.marks.set(`${provider}/${model}`, { kind, at: now });
+  /** `windowMs` : durée annoncée par le fournisseur (ex. « réessaie dans 17 s »), sinon défaut du type. */
+  reportFailure(provider: string, model: string, kind: ErrorKind, now = Date.now(), windowMs?: number): void {
+    const window = windowMs !== undefined ? windowMs + 5_000 : WINDOW_MS[kind];
+    if (window !== undefined) this.marks.set(`${provider}/${model}`, { kind, until: now + window });
   }
 
   reportSuccess(provider: string, model: string): void {
@@ -30,7 +33,7 @@ export class HealthTracker {
     const key = `${provider}/${model}`;
     const mark = this.marks.get(key);
     if (mark === undefined) return undefined;
-    if (now - mark.at > (WINDOW_MS[mark.kind] ?? 0)) {
+    if (now > mark.until) {
       this.marks.delete(key);
       return undefined;
     }

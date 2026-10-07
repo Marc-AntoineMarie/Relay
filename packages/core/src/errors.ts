@@ -13,6 +13,7 @@ export type ErrorKind =
   | "bad_request" // paramètre refusé par le fournisseur
   | "too_large" // requête trop volumineuse pour ce modèle / cette offre (contexte, tokens par minute)
   | "network" // connexion impossible
+  | "invalid_output" // réponse inutilisable (vide, appel d'outil inventé…)
   | "unknown";
 
 const RETRYABLE: ReadonlySet<ErrorKind> = new Set(["rate_limited", "overloaded", "timeout", "network"]);
@@ -35,13 +36,27 @@ export class ProviderRequestError extends Error {
 
 /** Un autre modèle peut-il réussir là où celui-ci a échoué ? (repli du routeur) */
 export function shouldTryAnotherModel(error: ProviderRequestError): boolean {
-  return error.retryable || error.kind === "model_not_found" || error.kind === "too_large";
+  return error.retryable || error.kind === "model_not_found" || error.kind === "too_large" || error.kind === "invalid_output";
 }
+
+/** Délai annoncé par le fournisseur avant de réessayer (« try again in 17.4s », « retryDelay: "41s" »). */
+export function retryDelayMs(error: ProviderRequestError): number | undefined {
+  const m =
+    /(?:try again|retry) in\s*(\d+(?:\.\d+)?)\s*(ms|s)\b/i.exec(error.message) ??
+    /"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)(s)"/i.exec(error.message);
+  if (m === null) return undefined;
+  const n = Number.parseFloat(m[1] ?? "");
+  return Number.isFinite(n) ? Math.ceil(m[2] === "ms" ? n : n * 1000) : undefined;
+}
+
+/** Le modèle a « appelé un outil » qu'on ne lui a pas donné (fréquent avec gpt-oss) : sa réponse est perdue. */
+const INVALID_OUTPUT = /(called a tool|tool_use_failed|failed to call a function|tool call validation|attempted to call tool)/i;
 
 const TOO_LARGE = /(request too large|too many tokens|context length|maximum context|context window|reduce (your|the) (message|prompt))/i;
 
 /** Classe une erreur HTTP (le message affine certains cas ambigus). */
 export function kindFromStatus(status: number | undefined, message = ""): ErrorKind {
+  if (INVALID_OUTPUT.test(message)) return "invalid_output";
   if (status === undefined) return "unknown";
   if (status === 413 || ((status === 400 || status === 429) && TOO_LARGE.test(message))) return "too_large";
   if (status === 401 || status === 403) return "auth";
@@ -84,6 +99,10 @@ const COPY: Record<ErrorKind, { title: string; hint: string }> = {
   too_large: {
     title: "Requête trop volumineuse pour ce modèle",
     hint: "Le modèle (ou ton offre gratuite) limite la taille des requêtes : un modèle à plus grand contexte, comme Gemini, convient mieux.",
+  },
+  invalid_output: {
+    title: "Réponse du modèle inutilisable",
+    hint: "Le modèle a renvoyé une réponse vide ou malformée : Relay passe à un autre modèle. Si ça se répète, retire-le du pool (Réglages › Modèles).",
   },
   network: { title: "Connexion impossible", hint: "Vérifie ta connexion (ou qu'Ollama tourne, pour le local)." },
   unknown: { title: "Erreur inattendue", hint: "Réessaie ; si ça persiste, change de modèle ou de backend." },

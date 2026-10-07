@@ -76,7 +76,7 @@ export class Workspace {
   }
 
   /** Aperçu pour un prompt : liste des fichiers + contenu des petits fichiers texte, dans un budget. */
-  snapshot(budget = 24_000): string {
+  snapshot(budget = 12_000): string {
     const files = this.list();
     if (files.length === 0) return "(dossier vide)";
     const listing = files.map((f) => `- ${f.path} (${f.size} o)`).join("\n");

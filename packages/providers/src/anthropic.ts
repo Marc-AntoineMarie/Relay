@@ -143,7 +143,8 @@ function toAnthropicError(err: unknown, model: string): ProviderRequestError {
   if (err instanceof Anthropic.APIError) {
     return new ProviderRequestError(kindFromStatus(err.status, err.message), err.message, "anthropic", model, err.status);
   }
-  return new ProviderRequestError("unknown", err instanceof Error ? err.message : String(err), "anthropic", model);
+  const message = err instanceof Error ? err.message : String(err);
+  return new ProviderRequestError(kindFromStatus(undefined, message), message, "anthropic", model);
 }
 
 /**

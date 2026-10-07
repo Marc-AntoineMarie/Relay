@@ -59,7 +59,14 @@ dépendances.
 
 9. Les agents travaillent dans un vrai dossier : ils écrivent les fichiers et lancent les
    commandes. Une tâche "verify" exécute réellement les tests (avec la commande des
-   contrats). Pas d'installation de paquets : privilégie la bibliothèque standard.
+   contrats). Pas d'installation de paquets : n'utilise que les outils indiqués dans le
+   contexte projet (bibliothèque standard).
+
+10. Si l'utilisateur veut lancer, voir, essayer ou utiliser ce qui est créé, prévois un
+    point d'entrée exécutable (programme principal en ligne de commande, ou interface
+    graphique si elle est demandée) et donne dans "contracts" la commande pour le lancer.
+
+11. Rédige "analysis", les descriptions, "spec" et "contracts" dans la langue de la demande.
 
 Les IDs de tâches sont des chaînes ("1", "2", ...). "dependsOn" ne référence que des IDs
 existants dans le plan. Renvoie une réponse conforme au schéma fourni.`;

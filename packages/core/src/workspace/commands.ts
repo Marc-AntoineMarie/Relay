@@ -94,6 +94,18 @@ export interface RunCommandOptions {
   maxOutput?: number;
 }
 
+/** Lance un programme sans l'attendre (application graphique…) ; sa sortie n'est pas capturée. */
+export function launchCommand(command: string, cwd: string): Promise<number | undefined> {
+  return new Promise((resolveLaunch, reject) => {
+    const child = spawn("bash", ["-c", command], { cwd, env: safeEnv(), detached: true, stdio: "ignore" });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolveLaunch(child.pid);
+    });
+  });
+}
+
 export function runCommand(command: string, opts: RunCommandOptions): Promise<CommandResult> {
   const max = opts.maxOutput ?? 20_000;
   return new Promise((resolveResult) => {

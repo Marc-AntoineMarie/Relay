@@ -7,6 +7,7 @@
  * au bout de `maxIterations` tours (la tâche est alors marquée « vérifications en échec »
  * et l'exécuteur peut l'escalader).
  */
+import { ProviderRequestError } from "../errors.js";
 import type { RunTask, WorkerResult } from "../executor/index.js";
 import type { CompletionRequest, LogEntry, Message, PipelineEvent, Provider } from "../types.js";
 import { checkCommand, runCommand, type CommandPolicy, type CommandResult } from "../workspace/commands.js";
@@ -29,6 +30,9 @@ export interface AgentOptions {
 }
 
 type Emit = (event: PipelineEvent) => void;
+
+/** Types de tâches qui doivent laisser des fichiers dans le dossier. */
+const EXPECTS_FILES = new Set(["scaffold", "implement", "test", "document", "format"]);
 
 const log = (taskId: string, level: LogEntry["level"], title: string, detail?: string): PipelineEvent => ({
   type: "log",
@@ -85,6 +89,10 @@ export function agenticRunTask(opts: AgentOptions): RunTask {
 
     for (let iter = 0; iter < maxIterations; iter++) {
       const reply = await collect(provider, { ...ctx.request, system: AGENT_SYSTEM, messages }, ctx.onChunk);
+      if (iter === 0 && reply.text.trim().length === 0) {
+        // Tout parti en réflexion, ou rien : un autre modèle fera mieux.
+        throw new ProviderRequestError("invalid_output", "réponse vide (aucun texte produit)", provider.name, ctx.request.model);
+      }
       result.inputTokens += reply.inputTokens;
       result.outputTokens += reply.outputTokens;
       result.thinkingTokens += reply.thinkingTokens;
@@ -125,19 +133,38 @@ export function agenticRunTask(opts: AgentOptions): RunTask {
         feedback.push(`### Commande \`${command}\` → ${status} (${(r.durationMs / 1000).toFixed(1)} s)\n\`\`\`\n${r.output || "(aucune sortie)"}\n\`\`\``);
       }
 
+      for (const p of actions.incomplete) {
+        feedback.push(`### ${p} non écrit\nBloc ===FILE=== sans ===END=== (réponse coupée ?) : réécris ce fichier en entier.`);
+        emit(log(task.id, "warn", `#${task.id} fichier incomplet ignoré : ${p}`));
+      }
+
+      // Un modèle qui décrit son travail sans l'écrire : on le lui dit, une fois.
+      let nudge: string | undefined;
+      if (iter === 0 && actions.files.length === 0 && actions.runs.length === 0 && actions.reads.length === 0) {
+        if (EXPECTS_FILES.has(task.type)) {
+          nudge = "Tu n'as écrit aucun fichier, alors que ta tâche demande de les créer ou de les modifier réellement. Écris-les maintenant avec ===FILE=== (contenu complet).";
+        } else if (task.type === "verify") {
+          nudge = "Tu n'as lancé aucune vérification : lance-la réellement avec ===RUN===.";
+        }
+        if (nudge !== undefined) emit(log(task.id, "warn", `#${task.id} aucune action dans la réponse → relance`, nudge));
+      }
+
       checksFailed = failed > 0;
-      const needMore = actions.reads.length > 0 || failed > 0;
+      const needMore = actions.reads.length > 0 || failed > 0 || actions.incomplete.length > 0 || nudge !== undefined;
       if (!needMore || iter === maxIterations - 1) break;
 
-      emit(log(task.id, failed > 0 ? "warn" : "info", `#${task.id} tour ${iter + 2} : ${failed > 0 ? `${failed} commande(s) en échec → correction` : "lecture de fichiers"}`));
+      if (nudge === undefined) {
+        emit(log(task.id, failed > 0 ? "warn" : "info", `#${task.id} tour ${iter + 2} : ${failed > 0 ? `${failed} commande(s) en échec → correction` : actions.incomplete.length > 0 ? "fichier(s) à réécrire" : "lecture de fichiers"}`));
+      }
       messages.push(
         { role: "assistant", content: reply.text },
         {
           role: "user",
-          content: `## Résultats\n${feedback.join("\n\n")}\n\n${
-            failed > 0
+          content: `${feedback.length > 0 ? `## Résultats\n${feedback.join("\n\n")}\n\n` : ""}${
+            nudge ??
+            (failed > 0
               ? "Des commandes échouent : corrige (fichiers COMPLETS avec ===FILE===) puis relance-les avec ===RUN===."
-              : "Continue ta tâche avec ces informations."
+              : "Continue ta tâche avec ces informations.")
           } Termine par une phrase de résumé.`,
         },
       );
