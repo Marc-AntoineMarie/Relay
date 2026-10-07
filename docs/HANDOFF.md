@@ -20,7 +20,7 @@ dossier par run, lance des commandes (tests) et corrige ; l'utilisateur voit et 
 | A | panneaux libres (dockview), graphe zoomable | ✅ livré |
 | B | routage auto multi-comptes, besoins, stratégies, plafonds, journal | ✅ validé |
 | C | écran **Réglages** (comptes, test/suppression de clés, catalogue, routage, budget), synthèse finale, coûts d'orchestration | ✅ validé |
-| **D** | **actions réelles** : dossier de travail, fichiers, commandes (Prudent/Sûr/Libre), panneaux Fichiers + Exécution, vérification + escalade ; **contrats partagés** + `spec` par tâche | ✅ codé et testé en réel, **en attente de validation** |
+| **D** | **actions réelles** : dossier de travail, fichiers, commandes (Prudent/Sûr/Libre), panneaux Fichiers + Exécution, vérification + escalade ; **contrats partagés** + `spec` par tâche ; **boucle test → correction** (session par dossier, erreurs remontées en nœuds rouges, *Corriger avec Relay*, Aperçu HTML) | ✅ codé et testé en réel, **en attente de validation** |
 | E (prochaine) | **activité visible** : animation dans le graphe (quel modèle travaille sur quoi, en direct), décisions du routeur animées, liées au journal | demandée par l'utilisateur, **après validation de D** |
 
 **Prochaine action** : attendre la validation de la phase D, puis la phase « activité
@@ -36,7 +36,7 @@ le rappeler à l'utilisateur, il a demandé qu'on s'en souvienne.
 
 ```bash
 pnpm install          # une fois (télécharge aussi le binaire Electron)
-pnpm test             # 105 tests Vitest (core, providers, server), hors réseau
+pnpm test             # 110 tests Vitest (core, providers, server), hors réseau
 pnpm typecheck        # tsc -b : core, providers, cli, server
 pnpm --filter @relay/web typecheck   # le front n'est pas dans tsc -b
 pnpm desktop          # build + fenêtre Electron (usage normal)
@@ -56,8 +56,8 @@ est connecté (abonnement) mais **à ne pas utiliser pour les tests** (désactiv
 |---|---|---|
 | `core` | moteur | `types.ts` (contrat), `catalog.ts` (profils modèles), `decomposer/` (plan, besoins, contrats, spec), `router/index.ts` (manuel), `router/auto.ts` (AutoRouter, TaskRouting, escalade), `router/health.ts`, `executor/` (candidats, repli, patience, escalade, événements en direct via `emit`/`streamWhile`, synthèse), `agent/` (`agenticRunTask` : boucle agent), `workspace/` (`Workspace` confiné, protocole `===FILE===`, politiques et exécution des commandes), `errors.ts`, `metrics/`, `config.ts` |
 | `providers` | adaptateurs LLM | `anthropic.ts`, `claude-code.ts` (spawn `claude -p`), `openai-compatible.ts` (Gemini/Groq/…, repli, `reasoning_effort`), `factory.ts` (presets, `createProvider`, `autoPoolModels`, filtrage, suggestions) |
-| `server` | API locale | `src/index.ts` : `/api/state`, `/api/models`, `/api/pool`, `/api/settings` (GET/PUT → `.relay/settings.json`), `/api/keys` (+ `/test`, `/delete`), `/api/run` (SSE, modes auto/manuel, synthèse, budget, dossier de travail, validations), `/api/approve`, `/api/workspace/{runs,files,file,run,open}` ; `src/workspace.ts` (dossiers de run, confinement, outils installés, ouvrir dossier/VS Code) |
-| `web` | UI React + Vite | `App.tsx` (dockview, disposition **v4**, bouton Réglages, bandeau de validation), `store.tsx` (état partagé, réglages côté moteur, fichiers/commandes/validations), `panels.tsx` (Demande, Modèles, Pipeline, Tâche, Résultat, Coûts, Journal), `workspace-panels.tsx` (Fichiers, Exécution, validations), `Settings.tsx` (Comptes et clés, Modèles, Routage, Général), `components.tsx`, `PipelineView.tsx` (graphe zoomable) |
+| `server` | API locale | `src/session.ts` (session `.relay/session.json`, correction directe, ids par tour) ; `src/index.ts` : `/api/state`, `/api/models`, `/api/pool`, `/api/settings` (GET/PUT → `.relay/settings.json`), `/api/keys` (+ `/test`, `/delete`), `/api/run` (SSE, modes auto/manuel, synthèse, budget, dossier de travail, validations), `/api/approve`, `/api/workspace/{runs,files,file,run,open,launches,stop}`, aperçu `GET /ws/<run>/<chemin>` ; contrôle d'origine ; `src/workspace.ts` (dossiers de run, confinement, outils installés, ouvrir dossier/VS Code) |
+| `web` | UI React + Vite | `App.tsx` (dockview, disposition **v4**, bouton Réglages, bandeau de validation), `store.tsx` (état partagé, réglages côté moteur, fichiers/commandes/validations), `panels.tsx` (Demande, Modèles, Pipeline, Tâche, Résultat, Coûts, Journal), `workspace-panels.tsx` (Fichiers, Exécution, Aperçu, détail d'erreur, validations), `Settings.tsx` (Comptes et clés, Modèles, Routage, Général), `components.tsx`, `PipelineView.tsx` (graphe zoomable) |
 | `desktop` | Electron | `main.cjs` : démarre le serveur en interne (port 47474, sinon libre) et ouvre la fenêtre |
 | `cli` | ligne de commande | `src/index.ts` (`--provider`, `--model`) |
 
@@ -123,9 +123,15 @@ est connecté (abonnement) mais **à ne pas utiliser pour les tests** (désactiv
   `invalid_output` → repli automatique.
 - Les catalogues des fournisseurs changent souvent : préférer des **familles** dans
   `core/catalog.ts` plutôt que des noms figés ; vérifier avec `GET /api/pool` (champ `available`).
-- Disposition dockview mémorisée sous `relay.layout.v4` : **incrémenter la clé** si la liste
+- **Boucle test → correction** : une erreur obtenue en testant depuis Relay devient un nœud
+  « erreur » (`TaskView.userError`, id `errN`, hors moteur) ; *Corriger avec Relay* envoie
+  `POST /api/run {workspace, fix}` → une tâche d'agent sans planificateur. Les tours suivants
+  d'un dossier ont des ids `n.x`. Les erreurs vues **hors** de Relay ne remontent pas seules.
+- **Sécurité de l'API locale** : pas de CORS, origine et hôte vérifiés (`trustedRequest`) ;
+  l'Aperçu est une iframe `sandbox` sans `allow-same-origin` (la page ne peut pas appeler l'API).
+- Disposition dockview mémorisée sous `relay.layout.v5` : **incrémenter la clé** si la liste
   des panneaux change.
-- **Phase D, sécurité** : le confinement protège les écritures de l'agent ; une commande
+- **Phase D, sécurité des commandes** : le confinement protège les écritures de l'agent ; une commande
   autorisée (python…) peut tout faire → le mode *Sûr* évite les erreurs, pas un code
   malveillant ; *Prudent* = contrôle total. Les commandes ne reçoivent jamais les clés API.
 - Un run réel a une fois dépassé le délai sans cause reproductible (fournisseur lent) ; les

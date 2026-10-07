@@ -48,6 +48,25 @@ Commits `b8e2163` `5232b1f` `2110bda` `fc9e205` + docs · détail :
   modèles essayés par tâche.
 - Disposition par défaut v4 (onglets Fichiers et Exécution).
 
+#### Ajouté ensuite — boucle test → correction ([contribution](docs/contributions/2026-10-07-boucle-test-correction.md))
+
+- **Session par dossier** (`.relay/session.json`) : une suite (*Continuer*) ou une correction
+  repart du dossier, des contrats et de l'historique du projet ; graphe et journal s'allongent.
+- **Erreurs remontées au pipeline** : commande en échec, app qui plante (au démarrage ou plus
+  tard, sortie suivie jusqu'à sa fermeture), erreur JavaScript de l'Aperçu → nœud rouge
+  « erreur » + journal → **Corriger avec Relay** (une tâche d'agent, sans re-planification,
+  interdit de masquer l'erreur).
+- Onglet **Aperçu** : pages HTML du dossier dans Relay (iframe isolée), rechargées après
+  correction. Disposition v5.
+- Détection de `tkinter`, `pytest`, `python` ; absents signalés aux agents ; interface
+  graphique sans tkinter → page HTML. Les agents vérifient que le programme principal démarre.
+
+#### Sécurité
+
+- L'API locale n'envoie plus `Access-Control-Allow-Origin: *` et refuse les requêtes d'une
+  autre origine ou d'un hôte non local : un site web ouvert dans le navigateur ne peut plus
+  piloter Relay (ni lancer de commandes).
+
 ### Phase C — Réglages, synthèse finale, coûts honnêtes · 2026-10-07 · validée
 
 Commits `a18eca1` `c5f24d7` `224952a` + docs · détail :
