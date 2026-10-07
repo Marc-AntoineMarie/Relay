@@ -39,7 +39,10 @@ dépendances.
 5. Si la demande est trop vague pour produire un plan fiable, crée une seule tâche de
    type "clarify" avec tier "quick" qui liste les questions à poser.
 
-6. Décris chaque tâche en une phrase précise qui dit QUOI faire, pas COMMENT.
+6. Décris chaque tâche en une phrase précise qui dit QUOI faire (le résultat attendu,
+   vérifiable). Le COMMENT revient à l'agent qui l'exécute — sauf quand un détail précis
+   conditionne la réussite (algorithme imposé, cas limite, piège connu) : mets-le alors
+   dans "spec", en une ou deux phrases. Laisse "spec" vide sinon.
 
 7. Indique dans "needs" les besoins qui comptent vraiment pour la tâche (souvent aucun ou
    un seul) parmi :
@@ -48,6 +51,15 @@ dépendances.
    - long_context : beaucoup de texte ou de fichiers à lire
    - web : information récente à chercher sur internet
    - fast : tâche simple où la rapidité prime
+
+8. Si plusieurs tâches produisent des pièces qui doivent s'emboîter (fichiers, modules,
+   fonctions, formats de données), fixe-les dans "contracts" : noms de fichiers, signatures
+   publiques, formats échangés, commandes de test. Court et factuel ; chaque agent le recevra.
+   Laisse "contracts" vide pour une demande sans code ni pièces à assembler.
+
+9. Les agents travaillent dans un vrai dossier : ils écrivent les fichiers et lancent les
+   commandes. Une tâche "verify" exécute réellement les tests (avec la commande des
+   contrats). Pas d'installation de paquets : privilégie la bibliothèque standard.
 
 Les IDs de tâches sont des chaînes ("1", "2", ...). "dependsOn" ne référence que des IDs
 existants dans le plan. Renvoie une réponse conforme au schéma fourni.`;
@@ -59,6 +71,10 @@ export function buildWorkerPrompt(input: {
   taskDescription: string;
   dependencyResults: string;
   projectContext: string;
+  /** Contrats partagés du plan (fichiers, signatures, formats). */
+  contracts?: string;
+  /** Précisions du planificateur pour cette tâche. */
+  spec?: string;
 }): string {
   return `Tu exécutes une tâche dans un pipeline. Voici le contexte :
 
@@ -69,8 +85,8 @@ ${input.prompt}
 ${input.planSummary}
 
 ## Ta tâche
-${input.taskDescription}
-
+${input.taskDescription}${input.spec ? `\n\nPrécisions : ${input.spec}` : ""}
+${input.contracts ? `\n## Contrats partagés (à respecter exactement)\n${input.contracts}\n` : ""}
 ## Résultats des tâches précédentes
 ${input.dependencyResults || "(aucune dépendance)"}
 
@@ -81,5 +97,5 @@ ${input.projectContext || "(non fourni)"}
 - Fais exactement ce qui est demandé dans ta tâche, rien de plus.
 - Ton résultat sera utilisé par les tâches suivantes : sois précis et structuré.
 - Si tu produis du code, il doit compiler. Si tu produis des fichiers, liste-les.
-- Résume ton résultat en une phrase en début de réponse.`;
+- Résume ton résultat en une phrase.`;
 }

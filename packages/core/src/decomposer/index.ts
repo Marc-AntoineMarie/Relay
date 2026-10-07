@@ -50,10 +50,14 @@ export const PlanTaskSchema = z.object({
   expectedOutput: z.string(),
   // Tolérant : les étiquettes inconnues sont ignorées plutôt que de rejeter le plan.
   needs: z.array(z.string()).optional(),
+  /** Précisions (le « comment » essentiel) quand la tâche est délicate. */
+  spec: z.string().optional(),
 });
 
 export const PlanSchema = z.object({
   analysis: z.string(),
+  /** Contrats partagés : fichiers, signatures, formats, commandes de test. */
+  contracts: z.string().optional(),
   tasks: z.array(PlanTaskSchema).min(1).max(8),
 });
 
@@ -240,18 +244,21 @@ Renvoie UNIQUEMENT l'objet JSON complet et valide, conforme au schéma demandé 
 function buildPipeline(opts: DecomposeOptions, plan: Plan, planning: TaskMetrics): Pipeline {
   const tasks: Task[] = plan.tasks.map((t) => {
     const needs = [...new Set((t.needs ?? []).filter(isCapability))];
+    const spec = t.spec?.trim();
     return {
       id: t.id,
       type: t.type,
       description: t.description,
       tier: t.tier,
       ...(needs.length > 0 ? { needs } : {}),
+      ...(spec ? { spec } : {}),
       dependsOn: t.dependsOn,
       status: "pending",
       attempts: [],
       expectedOutput: t.expectedOutput,
     };
   });
+  const contracts = plan.contracts?.trim();
   return {
     id: crypto.randomUUID(),
     prompt: opts.prompt,
@@ -259,6 +266,7 @@ function buildPipeline(opts: DecomposeOptions, plan: Plan, planning: TaskMetrics
     tasks,
     status: "pending",
     planning,
+    ...(contracts ? { contracts } : {}),
     created: new Date(),
   };
 }

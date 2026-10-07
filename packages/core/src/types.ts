@@ -68,6 +68,8 @@ export interface Task {
   tier: RouteTier;
   /** Besoins spécifiques (code, raisonnement, long contexte, web, rapide). */
   needs?: Capability[];
+  /** Précisions courtes du planificateur quand la tâche est délicate (le « comment » essentiel). */
+  spec?: string;
   /** IDs des tâches prérequises. Sans dépendance mutuelle ⇒ parallélisables (v0.2). */
   dependsOn: string[];
   /** Assemblée par l'exécuteur à partir des sorties des dépendances. */
@@ -99,6 +101,10 @@ export interface Pipeline {
   metrics?: PipelineMetrics;
   /** Coût de la planification (comptée dans les totaux, à part des tâches). */
   planning?: TaskMetrics;
+  /** Contrats partagés par les tâches (noms de fichiers, signatures, formats, commande de test). */
+  contracts?: string;
+  /** Dossier de travail réel du run (phase D), s'il y en a un. */
+  workspace?: string;
   created: Date;
   finished?: Date;
 }
@@ -242,6 +248,20 @@ export type PipelineEvent =
   /** Une tentative commence (premier choix ou repli) ; `reason` est celle du modèle tenté. */
   | { type: "task:start"; taskId: string; model: string; provider?: string; effort?: Effort; reason?: string }
   | { type: "log"; entry: LogEntry }
+  /** Actions réelles d'une tâche dans le dossier de travail. */
+  | { type: "file:write"; taskId: string; path: string; bytes: number; created: boolean }
+  | { type: "command:start"; taskId: string; id: string; command: string }
+  | {
+      type: "command:done";
+      taskId: string;
+      id: string;
+      command: string;
+      exitCode: number | null;
+      output: string;
+      durationMs: number;
+      timedOut: boolean;
+      refused?: string;
+    }
   | { type: "task:chunk"; taskId: string; text: string }
   | { type: "task:done"; taskId: string; result: TaskIO; metrics: TaskMetrics }
   | { type: "task:failed"; taskId: string; error: string; metrics: TaskMetrics; description?: ErrorDescription }
@@ -265,7 +285,7 @@ export interface RouteAlternative {
   reason: string;
 }
 
-export type LogCategory = "plan" | "route" | "request" | "response" | "fallback" | "error" | "info";
+export type LogCategory = "plan" | "route" | "request" | "response" | "fallback" | "tool" | "error" | "info";
 
 /** Entrée du journal : une ligne lisible + le détail brut, dépliable dans l'UI. */
 export interface LogEntry {

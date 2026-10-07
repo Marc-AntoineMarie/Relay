@@ -57,7 +57,12 @@ export interface TaskRouting {
   report?(candidate: RouteCandidate, error?: ProviderRequestError): void;
   /** Coût réellement facturé d'un appel (suivi du budget). */
   onCost?(candidate: RouteCandidate, billedCost: number): void;
+  /** Modèle plus fort pour réessayer une tâche dont les vérifications échouent (`tried` : "provider/model"). */
+  escalate?(task: Pick<Task, "tier" | "needs">, tried: string[]): RouteCandidate | undefined;
 }
+
+const NEXT_TIER: Record<RouteTier, RouteTier> = { quick: "build", build: "deep", deep: "deep" };
+export const candidateKey = (c: { provider: string; model: string }): string => `${c.provider}/${c.model}`;
 
 const LEVEL: Record<RouteTier, number> = { quick: 0, build: 1, deep: 2 };
 const EFFORT: Record<RouteTier, Effort> = { quick: "low", build: "medium", deep: "high" };
@@ -191,6 +196,10 @@ export function autoRouting(
     onCost: (_c, cost) => router.spend(cost),
     report: (c, error) =>
       error !== undefined ? health?.reportFailure(c.provider, c.model, error.kind) : health?.reportSuccess(c.provider, c.model),
+    escalate: (task, tried) =>
+      router
+        .rank({ tier: NEXT_TIER[task.tier], ...(task.needs !== undefined ? { needs: task.needs } : {}) })
+        .find((c) => !tried.includes(candidateKey(c)) && !c.reason.includes("dernier recours")),
   };
 }
 
@@ -202,5 +211,12 @@ export function manualRouting(router: Router, provider: Provider): TaskRouting {
       return [{ provider: provider.name, model: a.model, effort: a.effort, reason: `choix manuel · tier ${task.tier}`, score: 0 }];
     },
     provider: () => provider,
+    // Escalade de relay.config.json : effort d'abord, puis modèle « escalate ».
+    escalate: (task) => {
+      const next = router.escalate(router.forTier(task.tier));
+      return next === null
+        ? undefined
+        : { provider: provider.name, model: next.model, effort: next.effort, reason: "escalade (relay.config.json)", score: 0 };
+    },
   };
 }

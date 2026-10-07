@@ -3,17 +3,20 @@
  * résultats et émet des événements typés (dont un journal lisible).
  *
  * Routage : `TaskRouting` fournit des candidats classés (mode manuel : un seul ; mode
- * automatique : tous les comptes). Si un candidat échoue (saturé, quota, retiré…), la
- * tâche passe au suivant — éventuellement chez un autre fournisseur.
+ * automatique : tous les comptes). Si un candidat échoue (saturé, quota, retiré, requête
+ * trop volumineuse…), la tâche passe au suivant — éventuellement chez un autre compte.
  *
- * À VENIR (phase D) : remplacer `runTask` par une boucle d'outils (fichiers + shell).
+ * Phase D : avec un `runTask` agentique, la tâche agit sur un vrai dossier ; ses actions
+ * (fichiers, commandes) sont streamées en direct. Si ses vérifications échouent encore,
+ * elle est escaladée une fois vers un modèle plus fort.
  */
 import { referenceCost } from "../catalog.js";
 import { describeError, ProviderRequestError, shouldTryAnotherModel } from "../errors.js";
 import { computePipelineMetrics } from "../metrics/index.js";
 import { buildWorkerPrompt } from "../decomposer/system-prompt.js";
-import { manualRouting, type RouteCandidate, type TaskRouting } from "../router/auto.js";
+import { candidateKey, manualRouting, type RouteCandidate, type TaskRouting } from "../router/auto.js";
 import { Router } from "../router/index.js";
+import { Workspace } from "../workspace/workspace.js";
 import type {
   CompletionRequest,
   LogEntry,
@@ -45,6 +48,12 @@ export interface WorkerResult {
   /** Modèle réellement utilisé si le provider a fait un repli interne. */
   servedModel?: string;
   stop?: StopReason;
+  /** Résumé en une ligne (sinon : première ligne du texte). */
+  summary?: string;
+  /** Données transmises dans `TaskIO.data` (fichiers écrits, commandes…). */
+  data?: Record<string, unknown>;
+  /** Des vérifications (commandes) échouent encore à la fin de la tâche. */
+  checksFailed?: boolean;
 }
 
 export interface RunTaskContext {
@@ -53,9 +62,11 @@ export interface RunTaskContext {
   provider: Provider;
   /** Flux de texte au fil de l'eau (pour émettre des `task:chunk`). */
   onChunk: (text: string) => void;
+  /** Émet un événement en direct (fichier écrit, commande, journal…). */
+  emit: (event: PipelineEvent) => void;
 }
 
-/** Stratégie d'exécution d'une tâche. Par défaut : un appel au provider. */
+/** Stratégie d'exécution d'une tâche. Par défaut : un appel au provider (texte). */
 export type RunTask = (ctx: RunTaskContext) => Promise<WorkerResult>;
 
 export interface ExecutorOptions {
@@ -66,7 +77,7 @@ export interface ExecutorOptions {
   router?: Router;
   /** Modèle de référence pour la baseline des métriques. */
   baselineModel?: string;
-  /** Point d'injection du worker agentique. Défaut : génération simple. */
+  /** Worker : génération simple par défaut, agentique en phase D (`agenticRunTask`). */
   runTask?: RunTask;
   /** Interrompt le pipeline avant la tâche suivante. */
   signal?: AbortSignal;
@@ -94,6 +105,17 @@ export class ExecutorError extends Error {
 }
 
 const log = (entry: Omit<LogEntry, "at">): PipelineEvent => ({ type: "log", entry: { at: Date.now(), ...entry } });
+
+/** Une tentative d'exécution d'une tâche sur un candidat. */
+interface Attempt {
+  candidate: RouteCandidate;
+  provider: Provider;
+  result: WorkerResult;
+  model: string;
+  referenceCost: number;
+  billedCost: number;
+  durationMs: number;
+}
 
 /** Exécute le pipeline et émet les événements au fil de l'eau. */
 export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEvent> {
@@ -149,119 +171,120 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
 
     task.status = "running";
     const prompt = buildTaskPrompt(pipeline, task);
-    let finished = false;
+    const started = Date.now();
+    const attempts: Attempt[] = [];
 
-    for (let i = 0; i < candidates.length && !finished; i++) {
+    // 1. Premier choix, puis replis si le fournisseur échoue.
+    let failure: unknown;
+    for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i] as RouteCandidate;
-      const provider = routing.provider(c.provider);
-      routing.onUse?.(c);
-      task.assignedModel = c.model;
-      if (c.effort !== undefined) task.assignedEffort = c.effort;
-
-      yield {
-        type: "task:start",
-        taskId: task.id,
-        model: c.model,
-        provider: c.provider,
-        reason: c.reason,
-        ...(c.effort !== undefined ? { effort: c.effort } : {}),
-      };
-      yield log({
-        level: "info",
-        category: "request",
-        taskId: task.id,
-        title: `#${task.id} requête → ${c.provider} · ${c.model}${c.effort !== undefined ? ` (effort ${c.effort})` : ""}`,
-        detail: `[système]\n${WORKER_SYSTEM}\n\n[demande]\n${prompt}`,
-      });
-
-      const request: CompletionRequest = {
-        model: c.model,
-        ...(c.effort !== undefined ? { effort: c.effort } : {}),
-        system: WORKER_SYSTEM,
-        messages: [{ role: "user", content: prompt }],
-        maxTokens: DEFAULT_WORKER_MAX_TOKENS,
-      };
-
-      const started = Date.now();
-      const chunks: string[] = [];
-      let result: WorkerResult;
-      try {
-        result = await runTask({ task, request, provider, onChunk: (text) => chunks.push(text) });
-      } catch (err) {
-        const pe = err instanceof ProviderRequestError ? err : undefined;
-        routing.report?.(c, pe);
-        const description = describeError(err);
-        const next = candidates[i + 1];
-        if (next !== undefined && pe !== undefined && shouldTryAnotherModel(pe)) {
-          yield log({
-            level: "warn",
-            category: "fallback",
-            taskId: task.id,
-            title: `#${task.id} ${c.provider} · ${c.model} : ${description.title.toLowerCase()} → repli sur ${next.provider} · ${next.model}`,
-            detail: description.detail,
-          });
-          continue;
-        }
-        const error = `${description.title} — ${description.detail}`;
-        const metrics = failMetrics(task, c, started);
-        task.status = "failed";
-        task.attempts.push({ model: c.model, ...(c.effort !== undefined ? { effort: c.effort } : {}), success: false, metrics, error });
-        taskMetrics.push(metrics);
-        yield log({ level: "error", category: "error", taskId: task.id, title: `#${task.id} échec : ${description.title}`, detail: description.detail });
-        yield { type: "task:failed", taskId: task.id, error, metrics, description };
-        pipeline.status = "failed";
-        yield { type: "pipeline:failed", pipeline, error, description };
-        return;
+      const outcome = yield* attempt(task, c, prompt, routing, runTask);
+      if ("result" in outcome) {
+        attempts.push(outcome);
+        failure = undefined;
+        break;
       }
-
-      routing.report?.(c);
-      for (const text of chunks) yield { type: "task:chunk", taskId: task.id, text };
-
-      const servedModel = result.servedModel ?? c.model;
-      const truncated = result.stop === "length";
-      const output: TaskIO = {
-        summary: firstLine(result.text),
-        data: { result: result.text, ...(truncated ? { truncated: true } : {}) },
-      };
-      const refCost = referenceCost(servedModel, result.inputTokens, result.outputTokens);
-      const durationMs = Date.now() - started;
-      const metrics: TaskMetrics = {
-        taskId: task.id,
-        model: servedModel,
-        provider: c.provider,
-        ...(c.effort !== undefined ? { effort: c.effort } : {}),
-        tier: task.tier,
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-        thinkingTokens: result.thinkingTokens,
-        referenceCost: refCost,
-        billedCost: provider.billing === "per-token" ? refCost : 0,
-        durationMs,
-        success: true,
-        escalated: false,
-      };
-      // Repli interne au provider, ou candidat de repli du routeur.
-      if (servedModel !== c.model) metrics.fallbackFrom = c.model;
-      else if (i > 0) metrics.fallbackFrom = `${first.provider} · ${first.model}`;
-
-      task.output = output;
-      task.status = "done";
-      task.attempts.push({ model: servedModel, ...(c.effort !== undefined ? { effort: c.effort } : {}), success: true, metrics, result: result.text });
-      taskMetrics.push(metrics);
-      routing.onCost?.(c, metrics.billedCost);
-
-      yield log({
-        level: truncated ? "warn" : "info",
-        category: "response",
-        taskId: task.id,
-        title: `#${task.id} réponse de ${servedModel} · ${result.outputTokens} tokens${
-          result.thinkingTokens > 0 ? ` (dont ${result.thinkingTokens} de réflexion)` : ""
-        } · ${(durationMs / 1000).toFixed(1)} s${truncated ? " · TRONQUÉE" : ""}`,
-        detail: result.text,
-      });
-      yield { type: "task:done", taskId: task.id, result: output, metrics };
-      finished = true;
+      failure = outcome.error;
+      const next = candidates[i + 1];
+      if (next !== undefined && outcome.error instanceof ProviderRequestError && shouldTryAnotherModel(outcome.error)) {
+        const d = describeError(outcome.error);
+        yield log({
+          level: "warn",
+          category: "fallback",
+          taskId: task.id,
+          title: `#${task.id} ${c.provider} · ${c.model} : ${d.title.toLowerCase()} → repli sur ${next.provider} · ${next.model}`,
+          detail: d.detail,
+        });
+        continue;
+      }
+      break;
     }
+
+    const firstSuccess = attempts[0];
+    if (firstSuccess === undefined) {
+      const description = describeError(failure);
+      const error = `${description.title} — ${description.detail}`;
+      const metrics = failMetrics(task, candidates.at(-1) ?? first, started);
+      task.status = "failed";
+      task.attempts.push({ model: metrics.model, ...(metrics.effort !== undefined ? { effort: metrics.effort } : {}), success: false, metrics, error });
+      taskMetrics.push(metrics);
+      yield log({ level: "error", category: "error", taskId: task.id, title: `#${task.id} échec : ${description.title}`, detail: description.detail });
+      yield { type: "task:failed", taskId: task.id, error, metrics, description };
+      pipeline.status = "failed";
+      yield { type: "pipeline:failed", pipeline, error, description };
+      return;
+    }
+
+    // 2. Escalade : vérifications encore en échec → un modèle plus fort, une fois.
+    if (firstSuccess.result.checksFailed === true && routing.escalate !== undefined) {
+      const tried = [...new Set([...candidates.map(candidateKey), candidateKey(firstSuccess.candidate)])];
+      const up = routing.escalate(task, tried);
+      if (up !== undefined) {
+        yield {
+          type: "task:escalate",
+          taskId: task.id,
+          from: { provider: firstSuccess.candidate.provider, model: firstSuccess.model, ...(firstSuccess.candidate.effort !== undefined ? { effort: firstSuccess.candidate.effort } : {}) },
+          to: { provider: up.provider, model: up.model, ...(up.effort !== undefined ? { effort: up.effort } : {}) },
+          reason: "vérifications encore en échec",
+        };
+        yield log({
+          level: "warn",
+          category: "fallback",
+          taskId: task.id,
+          title: `#${task.id} escalade : vérifications en échec avec ${firstSuccess.model} → ${up.provider} · ${up.model}`,
+          detail: `Raison : ${up.reason}`,
+        });
+        const retryPrompt = `${prompt}\n\n## Tentative précédente (${firstSuccess.model})\nElle n'a pas réussi à faire passer les vérifications. Reprends le travail à partir de l'état actuel du dossier.\n${firstSuccess.result.text.slice(0, 3_000)}`;
+        const outcome = yield* attempt(task, up, retryPrompt, routing, runTask);
+        if ("result" in outcome) attempts.push(outcome);
+        else yield log({ level: "warn", category: "error", taskId: task.id, title: `#${task.id} escalade impossible : ${describeError(outcome.error).title} — résultat précédent conservé` });
+      }
+    }
+
+    const final = attempts.at(-1) as Attempt;
+    const result = final.result;
+    const truncated = result.stop === "length";
+    const output: TaskIO = {
+      summary: result.summary ?? firstLine(result.text),
+      data: { result: result.text, ...result.data, ...(truncated ? { truncated: true } : {}) },
+    };
+    const sum = (f: (a: Attempt) => number): number => attempts.reduce((n, a) => n + f(a), 0);
+    const metrics: TaskMetrics = {
+      taskId: task.id,
+      model: final.model,
+      provider: final.candidate.provider,
+      ...(final.candidate.effort !== undefined ? { effort: final.candidate.effort } : {}),
+      tier: task.tier,
+      inputTokens: sum((a) => a.result.inputTokens),
+      outputTokens: sum((a) => a.result.outputTokens),
+      thinkingTokens: sum((a) => a.result.thinkingTokens),
+      referenceCost: sum((a) => a.referenceCost),
+      billedCost: sum((a) => a.billedCost),
+      durationMs: Date.now() - started,
+      success: true,
+      escalated: attempts.length > 1,
+    };
+    // Repli interne au provider, ou candidat de repli / escalade du routeur.
+    if (final.model !== final.candidate.model) metrics.fallbackFrom = final.candidate.model;
+    else if (candidateKey(final.candidate) !== candidateKey(first)) metrics.fallbackFrom = `${first.provider} · ${first.model}`;
+
+    task.output = output;
+    task.status = "done";
+    for (const a of attempts) {
+      task.attempts.push({ model: a.model, ...(a.candidate.effort !== undefined ? { effort: a.candidate.effort } : {}), success: true, metrics, result: a.result.text });
+    }
+    taskMetrics.push(metrics);
+
+    yield log({
+      level: truncated || result.checksFailed === true ? "warn" : "info",
+      category: "response",
+      taskId: task.id,
+      title: `#${task.id} terminée par ${final.model} · ${metrics.outputTokens} tokens${
+        metrics.thinkingTokens > 0 ? ` (dont ${metrics.thinkingTokens} de réflexion)` : ""
+      } · ${(metrics.durationMs / 1000).toFixed(1)} s${truncated ? " · TRONQUÉE" : ""}${result.checksFailed === true ? " · ⚠ vérifications en échec" : ""}`,
+      detail: result.text,
+    });
+    yield { type: "task:done", taskId: task.id, result: output, metrics };
   }
 
   const synthesis = opts.synthesis === true ? yield* synthesize(pipeline, routing) : undefined;
@@ -273,12 +296,102 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
   yield { type: "pipeline:done", pipeline, metrics };
 }
 
+/** Exécute une tâche sur un candidat ; streame ses événements ; renvoie le résultat ou l'erreur. */
+async function* attempt(
+  task: Task,
+  c: RouteCandidate,
+  prompt: string,
+  routing: TaskRouting,
+  runTask: RunTask,
+): AsyncGenerator<PipelineEvent, Attempt | { error: unknown }> {
+  const provider = routing.provider(c.provider);
+  routing.onUse?.(c);
+  task.assignedModel = c.model;
+  if (c.effort !== undefined) task.assignedEffort = c.effort;
+
+  yield { type: "task:start", taskId: task.id, model: c.model, provider: c.provider, reason: c.reason, ...(c.effort !== undefined ? { effort: c.effort } : {}) };
+  yield log({
+    level: "info",
+    category: "request",
+    taskId: task.id,
+    title: `#${task.id} requête → ${c.provider} · ${c.model}${c.effort !== undefined ? ` (effort ${c.effort})` : ""}`,
+    detail: `[système]\n${WORKER_SYSTEM}\n\n[demande]\n${prompt}`,
+  });
+
+  const request: CompletionRequest = {
+    model: c.model,
+    ...(c.effort !== undefined ? { effort: c.effort } : {}),
+    system: WORKER_SYSTEM,
+    messages: [{ role: "user", content: prompt }],
+    maxTokens: DEFAULT_WORKER_MAX_TOKENS,
+  };
+
+  const started = Date.now();
+  const chunks: string[] = [];
+  let result: WorkerResult;
+  try {
+    result = yield* streamWhile((emit) => runTask({ task, request, provider, emit, onChunk: (t) => chunks.push(t) }));
+  } catch (err) {
+    routing.report?.(c, err instanceof ProviderRequestError ? err : undefined);
+    return { error: err };
+  }
+  routing.report?.(c);
+  for (const text of chunks) yield { type: "task:chunk", taskId: task.id, text };
+
+  const model = result.servedModel ?? c.model;
+  const refCost = referenceCost(model, result.inputTokens, result.outputTokens);
+  const billedCost = provider.billing === "per-token" ? refCost : 0;
+  routing.onCost?.(c, billedCost);
+  return { candidate: c, provider, result, model, referenceCost: refCost, billedCost, durationMs: Date.now() - started };
+}
+
 /**
- * Synthèse : un modèle « build » assemble tous les résultats en un livrable unique.
+ * Exécute `fn` et yield en temps réel les événements qu'elle émet ; renvoie son résultat.
+ * (Le worker agentique écrit des fichiers et lance des commandes pendant qu'on l'attend.)
+ */
+async function* streamWhile<T>(fn: (emit: (e: PipelineEvent) => void) => Promise<T>): AsyncGenerator<PipelineEvent, T> {
+  const buffer: PipelineEvent[] = [];
+  let wake: (() => void) | undefined;
+  let done = false;
+  let value: T | undefined;
+  let error: unknown;
+  let failed = false;
+
+  void fn((e) => {
+    buffer.push(e);
+    wake?.();
+  }).then(
+    (v) => {
+      value = v;
+      done = true;
+      wake?.();
+    },
+    (e: unknown) => {
+      error = e;
+      failed = true;
+      done = true;
+      wake?.();
+    },
+  );
+
+  while (true) {
+    while (buffer.length > 0) yield buffer.shift() as PipelineEvent;
+    if (done) break;
+    await new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    wake = undefined;
+  }
+  while (buffer.length > 0) yield buffer.shift() as PipelineEvent;
+  if (failed) throw error;
+  return value as T;
+}
+
+/**
+ * Synthèse : un modèle « build » à long contexte assemble tous les résultats en un livrable.
  * En cas d'échec, le pipeline reste réussi (les résultats des tâches sont là).
  */
 async function* synthesize(pipeline: Pipeline, routing: TaskRouting): AsyncGenerator<PipelineEvent, TaskMetrics | undefined> {
-  // La synthèse lit tous les résultats : besoin « long contexte » (évite les modèles à petite fenêtre).
   const candidates = routing.candidates({ tier: "build", needs: ["long_context"] }).slice(0, MAX_ROUTE_ATTEMPTS);
   const prompt = buildSynthesisPrompt(pipeline);
 
@@ -300,6 +413,7 @@ async function* synthesize(pipeline: Pipeline, routing: TaskRouting): AsyncGener
         },
         provider,
         onChunk: () => undefined,
+        emit: () => undefined,
       });
       routing.report?.(c);
       const model = r.servedModel ?? c.model;
@@ -352,6 +466,30 @@ function buildSynthesisPrompt(pipeline: Pipeline): string {
       return `## [${t.id}] (${t.tier}/${t.type}) ${t.description}\n${clipped}`;
     })
     .join("\n\n");
+
+  if (pipeline.workspace !== undefined) {
+    // Les fichiers existent déjà : on ne recopie pas le code, on explique comment s'en servir.
+    const files = new Workspace(pipeline.workspace)
+      .list()
+      .map((f) => `- ${f.path} (${f.size} o)`)
+      .join("\n");
+    return `# Demande originale
+${pipeline.prompt}
+
+# Dossier de travail
+${pipeline.workspace}
+${files || "(vide)"}
+
+# Résultats des tâches
+${results}
+
+# Consignes
+Les fichiers sont DÉJÀ écrits dans le dossier : ne recopie pas le code. Rédige un compte rendu court et utile :
+1. L'arborescence et le rôle de chaque fichier.
+2. Comment lancer et tester (commandes exactes, depuis le dossier).
+3. L'état des vérifications (tests passés ou en échec, avec la cause).
+4. Les limites ou prochaines étapes éventuelles.`;
+  }
 
   return `# Demande originale
 ${pipeline.prompt}
@@ -414,7 +552,7 @@ function buildTaskPrompt(pipeline: Pipeline, task: Task): string {
 
   const ctx = pipeline.context;
   const projectContext = [
-    `cwd: ${ctx.cwd}`,
+    pipeline.workspace === undefined ? `cwd: ${ctx.cwd}` : "",
     ctx.stack && ctx.stack.length > 0 ? `stack: ${ctx.stack.join(", ")}` : "",
     ctx.conventions ? `conventions:\n${ctx.conventions}` : "",
   ]
@@ -427,6 +565,8 @@ function buildTaskPrompt(pipeline: Pipeline, task: Task): string {
     taskDescription: task.description,
     dependencyResults: depResults,
     projectContext,
+    ...(pipeline.contracts !== undefined ? { contracts: pipeline.contracts } : {}),
+    ...(task.spec !== undefined ? { spec: task.spec } : {}),
   });
 }
 

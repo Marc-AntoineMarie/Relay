@@ -18,3 +18,7 @@ export * from "./router/index.js";
 export * from "./executor/index.js";
 export * from "./metrics/index.js";
 export * from "./monitor/index.js";
+export * from "./workspace/workspace.js";
+export * from "./workspace/protocol.js";
+export * from "./workspace/commands.js";
+export * from "./agent/index.js";
