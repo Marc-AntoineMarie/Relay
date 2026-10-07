@@ -8,11 +8,17 @@
  */
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  answerApproval,
   deleteKey,
   getModels,
   getPool,
   getSettings,
   getState,
+  launchInWorkspace,
+  listFiles,
+  listRuns,
+  openWorkspace,
+  runInWorkspace,
   runPipeline,
   saveSettings,
   setKey,
@@ -22,6 +28,10 @@ import {
 import {
   TIERS,
   type AccountPolicy,
+  type ApprovalRequest,
+  type CommandView,
+  type RunDir,
+  type WorkspaceFile,
   type AppState,
   type ErrorDescription,
   type KeyTestResult,
@@ -81,7 +91,18 @@ interface Catalog {
 
 export type SettingsSection = "accounts" | "models" | "routing" | "general";
 
-const DEFAULT_SETTINGS: Settings = { mode: "auto", strategy: "balanced", policies: {}, budgetPerRun: null, synthesis: true };
+const DEFAULT_SETTINGS: Settings = {
+  mode: "auto",
+  strategy: "balanced",
+  policies: {},
+  budgetPerRun: null,
+  synthesis: true,
+  agentic: true,
+  workspaceRoot: "",
+  commandPolicy: "safe",
+};
+
+const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 function useRelayState() {
   const [state, setState] = useState<AppState | null>(null);
@@ -105,7 +126,15 @@ function useRelayState() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [runInfo, setRunInfo] = useState<{ mode: Mode; accounts: string[]; strategy?: Strategy } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
+  // Phase D : dossier de travail du run, fichiers, commandes, validations.
+  const [workspace, setWorkspace] = useState<string | null>(null);
+  const [files, setFiles] = useState<WorkspaceFile[]>([]);
+  const [lastWrite, setLastWrite] = useState<{ path: string; at: number } | null>(null);
+  const [commands, setCommands] = useState<CommandView[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [runs, setRuns] = useState<RunDir[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  const userSeq = useRef(0);
 
   const busy = phase === "planning" || phase === "running";
   const selected = useMemo(() => state?.providers.find((p) => p.name === provider), [state, provider]);
@@ -124,6 +153,16 @@ function useRelayState() {
           setProvider((p) => p || pickProvider(s.providers, s.defaultProvider));
           const loaded = await getSettings();
           if (!cancelled && loaded !== null) setSettings(loaded);
+          // Au démarrage, les Fichiers montrent le dernier run.
+          const previous = await listRuns().catch(() => null);
+          if (!cancelled && previous !== null) {
+            setRuns(previous.runs);
+            const last = previous.runs[0];
+            if (last !== undefined) {
+              setWorkspace((w) => w ?? last.root);
+              void listFiles(last.root).then((r) => !cancelled && setFiles((f) => (f.length === 0 ? r.files : f)), () => undefined);
+            }
+          }
         })
         .catch(() => {
           if (cancelled) return;
@@ -258,6 +297,79 @@ function useRelayState() {
     }
   }
 
+  // ── Dossier de travail ────────────────────────────────────────────────────
+  async function refreshFiles(root = workspace): Promise<void> {
+    if (root === null) return;
+    try {
+      setFiles((await listFiles(root)).files);
+    } catch (e: unknown) {
+      setError({ kind: "config", title: "Dossier illisible", detail: errorText(e) });
+    }
+  }
+
+  async function refreshRuns(): Promise<void> {
+    try {
+      setRuns((await listRuns()).runs);
+    } catch {
+      /* moteur injoignable : la liste reste vide */
+    }
+  }
+
+  /** Rouvre le dossier d'un run précédent. */
+  function selectWorkspace(root: string): void {
+    if (busy) return;
+    setWorkspace(root);
+    setCommands([]);
+    void refreshFiles(root);
+  }
+
+  const upsertCommand = (id: string, update: Partial<CommandView> & Pick<CommandView, "command" | "by">): void =>
+    setCommands((cs) =>
+      cs.some((c) => c.id === id)
+        ? cs.map((c) => (c.id === id ? { ...c, ...update } : c))
+        : [...cs, { id, running: false, ...update }],
+    );
+
+  /** Commande lancée par toi depuis le panneau Exécution (attend la fin, sortie capturée). */
+  async function runUserCommand(command: string, stdin?: string): Promise<void> {
+    if (workspace === null || command.trim().length === 0) return;
+    const id = `toi-${++userSeq.current}`;
+    upsertCommand(id, { command, by: "toi", running: true });
+    try {
+      const r = await runInWorkspace(workspace, command, stdin);
+      upsertCommand(id, { command, by: "toi", running: false, exitCode: r.exitCode, output: r.output, durationMs: r.durationMs, timedOut: r.timedOut });
+      void refreshFiles();
+    } catch (e: unknown) {
+      upsertCommand(id, { command, by: "toi", running: false, exitCode: null, refused: errorText(e) });
+    }
+  }
+
+  /** Lance sans attendre (application graphique) : la fenêtre s'ouvre à côté. */
+  async function launchUserCommand(command: string): Promise<void> {
+    if (workspace === null || command.trim().length === 0) return;
+    const id = `toi-${++userSeq.current}`;
+    try {
+      await launchInWorkspace(workspace, command);
+      upsertCommand(id, { command, by: "toi", running: false, launched: true });
+    } catch (e: unknown) {
+      upsertCommand(id, { command, by: "toi", running: false, exitCode: null, refused: errorText(e) });
+    }
+  }
+
+  async function openIn(target: "folder" | "vscode"): Promise<void> {
+    if (workspace === null) return;
+    try {
+      await openWorkspace(workspace, target);
+    } catch (e: unknown) {
+      setError({ kind: "config", title: "Ouverture impossible", detail: errorText(e) });
+    }
+  }
+
+  function approve(key: string, ok: boolean): void {
+    setApprovals((as) => as.filter((a) => a.key !== key));
+    void answerApproval(key, ok).catch(() => undefined);
+  }
+
   // ── Exécution ─────────────────────────────────────────────────────────────
   const patch = (id: string, update: (v: TaskView) => Partial<TaskView>): void =>
     setViews((vs) => vs.map((v) => (v.task.id === id ? { ...v, ...update(v) } : v)));
@@ -284,6 +396,11 @@ function useRelayState() {
     setRunInfo(null);
     setSelectedId(null);
     setStartedAt(Date.now());
+    setWorkspace(null);
+    setFiles([]);
+    setCommands([]);
+    setApprovals([]);
+    let runRoot: string | null = null;
 
     try {
       for await (const ev of runPipeline(body, ac.signal)) {
@@ -323,11 +440,49 @@ function useRelayState() {
               provider: ev.metrics.provider,
               ...(ev.metrics.fallbackFrom !== undefined ? { fallbackFrom: ev.metrics.fallbackFrom } : {}),
               ...(ev.result.data?.truncated === true ? { truncated: true } : {}),
+              ...(ev.result.data?.files !== undefined ? { files: ev.result.data.files } : {}),
+              ...(ev.result.data?.commands !== undefined ? { commands: ev.result.data.commands } : {}),
+              ...(ev.result.data?.checksFailed === true ? { checksFailed: true } : {}),
             }));
             break;
           case "task:failed":
             patch(ev.taskId, () => ({ status: "failed", error: ev.error }));
             setSelectedId(ev.taskId);
+            break;
+          case "task:escalate":
+            patch(ev.taskId, () => ({ escalatedFrom: ev.from.model }));
+            break;
+          case "workspace":
+            runRoot = ev.root;
+            setWorkspace(ev.root);
+            break;
+          case "file:write":
+            setFiles((fs) =>
+              [...fs.filter((f) => f.path !== ev.path), { path: ev.path, size: ev.bytes }].sort((a, b) => a.path.localeCompare(b.path)),
+            );
+            setLastWrite({ path: ev.path, at: Date.now() });
+            break;
+          case "command:start":
+            upsertCommand(ev.id, { taskId: ev.taskId, command: ev.command, by: "agent", running: true });
+            break;
+          case "command:done":
+            upsertCommand(ev.id, {
+              taskId: ev.taskId,
+              command: ev.command,
+              by: "agent",
+              running: false,
+              exitCode: ev.exitCode,
+              output: ev.output,
+              durationMs: ev.durationMs,
+              timedOut: ev.timedOut,
+              ...(ev.refused !== undefined ? { refused: ev.refused } : {}),
+            });
+            break;
+          case "approval:request":
+            setApprovals((as) => [...as, { key: ev.key, taskId: ev.taskId, command: ev.command }]);
+            break;
+          case "approval:done":
+            setApprovals((as) => as.filter((a) => a.key !== ev.key));
             break;
           case "pipeline:synthesis":
             setSynthesis({ text: ev.text, provider: ev.provider, model: ev.model, metrics: ev.metrics });
@@ -362,6 +517,9 @@ function useRelayState() {
       }
     } finally {
       abortRef.current = null;
+      setApprovals([]);
+      void refreshRuns();
+      if (runRoot !== null) void refreshFiles(runRoot); // fichiers créés par les commandes aussi
       setNow(Date.now()); // fige le chrono sur la durée réelle
       setPhase((p) => (p === "planning" || p === "running" ? "done" : p));
     }
@@ -425,6 +583,20 @@ function useRelayState() {
     removeKey,
     run,
     stop: () => abortRef.current?.abort(),
+    workspace,
+    files,
+    lastWrite,
+    commands,
+    approvals,
+    runs,
+    refreshFiles: () => void refreshFiles(),
+    refreshRuns: () => void refreshRuns(),
+    selectWorkspace,
+    runUserCommand,
+    launchUserCommand,
+    clearCommands: () => setCommands([]),
+    openIn,
+    approve,
   };
 }
 

@@ -238,7 +238,7 @@ export function ResultPanel(): React.JSX.Element {
             ? "Synthèse désactivée (Réglages › Routage)."
             : r.busy
               ? "Le livrable final apparaîtra ici à la fin du run."
-              : "Lance un pipeline : le livrable final (code des fichiers, mode d'emploi) s'affichera ici."}
+              : "Lance un pipeline : le compte rendu final (fichiers, comment lancer et tester) s'affichera ici."}
         </p>
       </div>
     );
@@ -264,13 +264,14 @@ export function ResultPanel(): React.JSX.Element {
 
 // ── Journal ─────────────────────────────────────────────────────────────────
 
-type LogFilter = "all" | "plan" | "route" | "model" | "fallback" | "error";
+type LogFilter = "all" | "plan" | "route" | "model" | "tool" | "fallback" | "error";
 
 const LOG_FILTERS: Array<{ value: LogFilter; label: string }> = [
   { value: "all", label: "Tout" },
   { value: "plan", label: "Plan" },
   { value: "route", label: "Routage" },
   { value: "model", label: "Modèle" },
+  { value: "tool", label: "Actions" },
   { value: "fallback", label: "Replis" },
   { value: "error", label: "Erreurs" },
 ];
@@ -281,6 +282,7 @@ const LOG_ICON: Record<LogEntry["category"], string> = {
   request: "➜",
   response: "✓",
   fallback: "↺",
+  tool: "⚙",
   error: "✖",
   info: "ℹ",
 };

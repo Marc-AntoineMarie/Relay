@@ -280,3 +280,60 @@ button.danger { border-color: rgba(255, 92, 114, 0.5); color: var(--red); }
 .result { gap: 8px; }
 .result-head { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
 .result-text { flex: 1; min-height: 0; }
+
+/* ── Phase D : fichiers, exécution, validations ─────────────────────────── */
+.setting-col { grid-template-columns: 1fr; }
+.setting-col > :last-child { justify-self: start; }
+.path-input { min-width: 320px; font-family: var(--mono); font-size: 12px; }
+
+.files, .exec { display: flex; flex-direction: column; height: 100%; }
+.files-tools { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.files-tools select { flex: 1; min-width: 140px; padding: 4px 8px; font-size: 12px; font-family: var(--mono); }
+.files-tools button { padding: 4px 10px; font-size: 12px; }
+.files-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(180px, 38%) 1fr; }
+.file-tree { list-style: none; margin: 0; padding: 6px 0; overflow: auto; border-right: 1px solid var(--border); font: 12px/1.5 var(--mono); }
+.tree-dir { color: var(--muted); padding: 2px 8px; }
+.tree-file > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-file > span:last-child { flex-shrink: 0; white-space: nowrap; }
+.tree-file { width: 100%; display: flex; justify-content: space-between; gap: 8px; background: none; border: none; border-radius: 0; padding: 2px 8px; font: inherit; color: var(--text); text-align: left; }
+.tree-file:hover { background: var(--raise); }
+.tree-file.active { background: rgba(91, 140, 255, 0.16); color: #fff; }
+.tree-file.recent { animation: flash 1.2s ease-out; }
+@keyframes flash { from { background: rgba(53, 195, 137, 0.35); } to { background: transparent; } }
+.file-view { min-width: 0; display: flex; flex-direction: column; padding: 8px; gap: 6px; overflow: hidden; }
+.file-view-head { font-family: var(--mono); }
+.file-hint { margin: 12px; }
+.file-content { white-space: pre; word-break: normal; }
+.code-line .ln { display: inline-block; width: 3.2em; margin-right: 10px; text-align: right; color: var(--muted); opacity: 0.55; user-select: none; }
+
+.cmd-list { list-style: none; margin: 0; padding: 4px 0; flex: 1; min-height: 0; overflow: auto; font: 12px/1.45 var(--mono); }
+.cmd-empty { padding: 10px 14px; font-family: var(--sans); }
+.cmd-line { width: 100%; display: flex; align-items: center; gap: 8px; background: none; border: none; border-radius: 0; padding: 4px 10px; font: inherit; color: var(--text); text-align: left; }
+.cmd-line:hover { background: var(--raise); }
+.cmd-icon { width: 16px; display: inline-grid; place-items: center; }
+.cmd-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmd-ok .cmd-icon { color: var(--green); }
+.cmd-fail .cmd-icon { color: var(--red); }
+.cmd-refused .cmd-icon, .cmd-refused .cmd-text { color: var(--amber); }
+.cmd-out { padding-bottom: 6px; }
+.cmd-out .link { margin-left: 34px; }
+.runner { border-top: 1px solid var(--border); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.runner-line { display: flex; align-items: center; gap: 6px; }
+.prompt-sign { font-family: var(--mono); color: var(--green); }
+.runner-input { flex: 1; min-width: 120px; font-family: var(--mono); font-size: 12px; padding: 5px 8px; }
+.runner-line button { padding: 5px 10px; font-size: 12px; white-space: nowrap; }
+.stdin { min-height: 64px; font: 12px/1.45 var(--mono); resize: vertical; }
+.suggestions { display: flex; gap: 4px; flex-wrap: wrap; }
+.suggestions .chip { border: 1px solid var(--border-strong); font-family: var(--mono); cursor: pointer; }
+
+.detail-actions { display: flex; flex-direction: column; gap: 4px; }
+.detail-cmds { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.detail-cmds .ok { color: var(--green); }
+.detail-cmds .fail { color: var(--red); }
+.detail-cmds code { color: var(--text); }
+
+.approvals { display: flex; flex-direction: column; gap: 6px; padding: 8px 22px; background: rgba(91, 140, 255, 0.1); border-bottom: 1px solid rgba(91, 140, 255, 0.35); }
+.approval { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.approval > span { flex: 1; min-width: 0; }
+.approval code { font-family: var(--mono); background: var(--panel-2); padding: 1px 6px; border-radius: 4px; }
+.approval .run-btn { padding: 5px 14px; }

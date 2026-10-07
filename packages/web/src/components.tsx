@@ -217,6 +217,35 @@ export function TaskDetail({ view }: { view: TaskView | undefined }): React.JSX.
           </>
         ) : null}
       </dl>
+      {view.escalatedFrom !== undefined ? (
+        <p className="badge warn">Escaladée : vérifications en échec avec {view.escalatedFrom}, reprise par un modèle plus fort</p>
+      ) : null}
+      {view.checksFailed === true ? <p className="detail-error">⚠ Des vérifications échouent encore (voir le panneau Exécution).</p> : null}
+      {view.files !== undefined && view.files.length > 0 ? (
+        <div className="detail-actions">
+          <span className="field-label">Fichiers écrits</span>
+          <ul className="chips">
+            {view.files.map((f) => (
+              <li key={f} className="chip">
+                {f}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {view.commands !== undefined && view.commands.length > 0 ? (
+        <div className="detail-actions">
+          <span className="field-label">Commandes</span>
+          <ul className="detail-cmds">
+            {view.commands.map((c, i) => (
+              <li key={i} className={c.exitCode === 0 ? "ok" : "fail"}>
+                {c.exitCode === 0 ? "✓" : "✗"} <code>{c.command}</code>
+                <span className="muted small"> {c.exitCode === null ? "refusée / délai" : `code ${c.exitCode}`}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {view.error !== undefined ? <p className="detail-error">{view.error}</p> : null}
       {view.truncated === true ? <p className="badge warn">Sortie tronquée (limite de tokens atteinte)</p> : null}
       <pre className="output">{view.output || (view.status === "running" ? "Génération en cours…" : "—")}</pre>

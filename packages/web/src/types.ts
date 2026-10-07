@@ -22,6 +22,52 @@ export interface Settings {
   policies: Record<string, AccountPolicy>;
   budgetPerRun: number | null;
   synthesis: boolean;
+  agentic: boolean;
+  workspaceRoot: string;
+  commandPolicy: CommandPolicy;
+}
+
+export type CommandPolicy = "ask" | "safe" | "auto";
+
+export interface WorkspaceFile {
+  path: string;
+  size: number;
+}
+
+export interface RunDir {
+  name: string;
+  root: string;
+  modified: number;
+}
+
+/** Commande lancée (par un agent ou par toi) et son résultat. */
+export interface CommandView {
+  id: string;
+  taskId?: string;
+  command: string;
+  running: boolean;
+  exitCode?: number | null;
+  output?: string;
+  durationMs?: number;
+  timedOut?: boolean;
+  refused?: string;
+  /** Lancée sans attendre (application graphique). */
+  launched?: boolean;
+  by: "agent" | "toi";
+}
+
+export interface ApprovalRequest {
+  key: string;
+  taskId: string;
+  command: string;
+}
+
+export interface CommandResult {
+  command: string;
+  exitCode: number | null;
+  output: string;
+  durationMs: number;
+  timedOut: boolean;
 }
 
 export interface KeyTestResult {
@@ -96,7 +142,7 @@ export interface PoolResponse {
 export interface LogEntry {
   at: number;
   level: "info" | "warn" | "error";
-  category: "plan" | "route" | "request" | "response" | "fallback" | "error" | "info";
+  category: "plan" | "route" | "request" | "response" | "fallback" | "tool" | "error" | "info";
   taskId?: string;
   title: string;
   detail?: string;
@@ -115,6 +161,7 @@ export interface Task {
   needs?: Capability[];
   description: string;
   dependsOn: string[];
+  spec?: string;
 }
 
 export interface TaskMetrics {
@@ -127,6 +174,7 @@ export interface TaskMetrics {
   outputTokens: number;
   thinkingTokens: number;
   durationMs: number;
+  escalated?: boolean;
 }
 
 export interface PipelineMetrics {
@@ -162,10 +210,42 @@ export type ServerEvent =
   | {
       type: "task:done";
       taskId: string;
-      result: { summary: string; data?: { result?: string; truncated?: boolean } };
+      result: {
+        summary: string;
+        data?: {
+          result?: string;
+          truncated?: boolean;
+          files?: string[];
+          commands?: Array<{ command: string; exitCode: number | null }>;
+          checksFailed?: boolean;
+        };
+      };
       metrics: TaskMetrics;
     }
   | { type: "task:failed"; taskId: string; error: string; description?: ErrorDescription }
+  | {
+      type: "task:escalate";
+      taskId: string;
+      from: { provider?: string; model: string };
+      to: { provider?: string; model: string };
+      reason: string;
+    }
+  | { type: "workspace"; root: string; policy: CommandPolicy }
+  | { type: "file:write"; taskId: string; path: string; bytes: number; created: boolean }
+  | { type: "command:start"; taskId: string; id: string; command: string }
+  | {
+      type: "command:done";
+      taskId: string;
+      id: string;
+      command: string;
+      exitCode: number | null;
+      output: string;
+      durationMs: number;
+      timedOut: boolean;
+      refused?: string;
+    }
+  | { type: "approval:request"; key: string; taskId: string; id: string; command: string }
+  | { type: "approval:done"; key: string; ok: boolean }
   | { type: "pipeline:synthesis"; text: string; provider: string; model: string; metrics: TaskMetrics }
   | { type: "pipeline:done"; metrics: PipelineMetrics }
   | { type: "pipeline:failed"; error: string; description?: ErrorDescription }
@@ -187,6 +267,11 @@ export interface TaskView {
   metrics?: TaskMetrics;
   error?: string;
   truncated?: boolean;
+  /** Phase D : fichiers écrits et commandes lancées par la tâche. */
+  files?: string[];
+  commands?: Array<{ command: string; exitCode: number | null }>;
+  checksFailed?: boolean;
+  escalatedFrom?: string;
 }
 
 export type Phase = "idle" | "planning" | "running" | "done" | "failed" | "stopped";

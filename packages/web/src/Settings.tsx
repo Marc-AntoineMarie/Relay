@@ -6,13 +6,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { CAP_LABEL, Segmented } from "./components";
 import { BILLING, useRelay, type Relay, type SettingsSection } from "./store";
-import { TIERS, type PoolAccount, type ProviderReadiness, type Strategy, type Tier } from "./types";
+import { TIERS, type CommandPolicy, type PoolAccount, type ProviderReadiness, type Strategy, type Tier } from "./types";
 
 const SECTIONS: Array<{ id: SettingsSection; label: string; hint: string }> = [
   { id: "accounts", label: "Comptes et clés", hint: "connecter, tester, supprimer" },
   { id: "models", label: "Modèles", hint: "catalogue et pool automatique" },
   { id: "routing", label: "Routage", hint: "stratégie, plafonds, budget" },
-  { id: "general", label: "Général", hint: "fichiers, disposition" },
+  { id: "general", label: "Général", hint: "actions des agents, dossier, disposition" },
 ];
 
 export function SettingsView({ onResetLayout }: { onResetLayout: () => void }): React.JSX.Element | null {
@@ -376,10 +376,65 @@ function PolicyRow({ account: a, r }: { account: PoolAccount; r: Relay }): React
 
 // ── Général ─────────────────────────────────────────────────────────────────
 
+const POLICY_OPTIONS = [
+  { value: "ask" as const, label: "Prudent", hint: "Chaque commande d'agent attend ton accord" },
+  { value: "safe" as const, label: "Sûr", hint: "Outils de développement seulement (python, node, tests…)" },
+  { value: "auto" as const, label: "Libre", hint: "Tout sauf les commandes destructrices" },
+];
+const POLICY_HINT: Record<CommandPolicy, string> = {
+  ask: "Chaque commande proposée par un agent s'affiche en haut de l'écran et attend « Autoriser » (refusée au bout de 5 min). Contrôle total.",
+  safe: "Seuls les programmes de développement courants sont lancés (python, node, pytest, make, ls, cat…). Le reste est refusé et l'agent en est informé. Attention : un interpréteur peut tout faire, ce mode évite les erreurs, pas un code malveillant.",
+  auto: "Tout est lancé, sauf les commandes destructrices évidentes (sudo, rm -rf /, git push…). À réserver aux comptes et projets de confiance.",
+};
+
 function GeneralSection({ onResetLayout }: { onResetLayout: () => void }): React.JSX.Element {
+  const r = useRelay();
+  const s = r.settings;
+  const [rootDraft, setRootDraft] = useState(s.workspaceRoot);
+  useEffect(() => setRootDraft(s.workspaceRoot), [s.workspaceRoot]);
   return (
     <section>
       <h3>Général</h3>
+      <h4>Actions réelles des agents</h4>
+      <div className="setting-row">
+        <div>
+          <strong>Mode agent</strong>
+          <p className="muted small">
+            Les tâches écrivent de vrais fichiers dans un dossier neuf par run et lancent des commandes (tests, exécution)
+            pour vérifier leur travail. Désactivé : elles renvoient seulement du texte.
+          </p>
+        </div>
+        <label className="switch">
+          <input type="checkbox" checked={s.agentic} disabled={r.busy} onChange={(e) => r.updateSettings({ agentic: e.target.checked })} />
+          <span>{s.agentic ? "activé" : "désactivé"}</span>
+        </label>
+      </div>
+      <div className="setting-row">
+        <div>
+          <strong>Dossier des runs</strong>
+          <p className="muted small">Chaque run crée un sous-dossier daté ici. Chemin absolu (ou commençant par ~/).</p>
+        </div>
+        <input
+          className="path-input"
+          value={rootDraft}
+          disabled={r.busy}
+          onChange={(e) => setRootDraft(e.target.value)}
+          onBlur={() => rootDraft.trim() !== s.workspaceRoot && r.updateSettings({ workspaceRoot: rootDraft.trim() })}
+        />
+      </div>
+      <div className="setting-row setting-col">
+        <div>
+          <strong>Commandes des agents</strong>
+          <p className="muted small">{POLICY_HINT[s.commandPolicy]}</p>
+          <p className="muted small">
+            Dans tous les modes : commandes lancées dans le dossier du run, sans tes clés API dans l'environnement, 60 s
+            maximum, et tu peux arrêter le pipeline à tout moment.
+          </p>
+        </div>
+        <Segmented value={s.commandPolicy} disabled={r.busy} onChange={(v) => r.updateSettings({ commandPolicy: v })} options={POLICY_OPTIONS} />
+      </div>
+
+      <h4>Interface</h4>
       <div className="setting-row">
         <div>
           <strong>Disposition des panneaux</strong>
@@ -392,7 +447,7 @@ function GeneralSection({ onResetLayout }: { onResetLayout: () => void }): React
           <strong>Fichiers</strong>
           <p className="muted small">
             Clés : <code>.env</code> (racine du projet, ignoré par git) · Réglages : <code>.relay/settings.json</code> ·
-            Le dossier de travail des runs arrivera avec la phase D (actions réelles).
+            Runs : <code>{s.workspaceRoot}</code>
           </p>
         </div>
       </div>

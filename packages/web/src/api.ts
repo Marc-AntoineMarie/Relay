@@ -9,6 +9,9 @@ import type {
   Strategy,
   TierModels,
   KeyTestResult,
+  CommandResult,
+  RunDir,
+  WorkspaceFile,
 } from "./types";
 
 export async function getSettings(): Promise<Settings | null> {
@@ -55,6 +58,41 @@ export async function deleteKey(provider: string): Promise<ProviderReadiness[]> 
   if (!res.ok) throw new Error(data.error ?? "suppression impossible");
   return data.providers ?? [];
 }
+
+// ── Dossier de travail (phase D) ────────────────────────────────────────────
+
+async function call<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  const data = (await res.json()) as T & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `erreur ${res.status}`);
+  return data;
+}
+
+const post = (body: unknown): RequestInit => ({
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+export const listRuns = (): Promise<{ base: string; runs: RunDir[] }> => call("/api/workspace/runs");
+
+export const listFiles = (root: string): Promise<{ root: string; files: WorkspaceFile[] }> =>
+  call(`/api/workspace/files?root=${encodeURIComponent(root)}`);
+
+export const readFile = (root: string, path: string): Promise<{ path: string; content: string }> =>
+  call(`/api/workspace/file?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`);
+
+export const runInWorkspace = (root: string, command: string, stdin?: string): Promise<CommandResult> =>
+  call("/api/workspace/run", post({ root, command, ...(stdin ? { stdin } : {}) }));
+
+export const launchInWorkspace = (root: string, command: string): Promise<{ launched: boolean; pid?: number }> =>
+  call("/api/workspace/run", post({ root, command, detached: true }));
+
+export const openWorkspace = (root: string, target: "folder" | "vscode"): Promise<{ ok: boolean }> =>
+  call("/api/workspace/open", post({ root, target }));
+
+export const answerApproval = (key: string, ok: boolean): Promise<{ found: boolean }> =>
+  call("/api/approve", post({ key, ok }));
 
 export type RunBody =
   | { mode: "auto"; prompt: string; strategy: Strategy; policies: Record<string, AccountPolicy> }

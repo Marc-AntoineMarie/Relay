@@ -17,6 +17,7 @@ import {
   RoutingPanel,
 } from "./panels";
 import { SettingsView } from "./Settings";
+import { ApprovalBar, ExecPanel, FilesPanel } from "./workspace-panels";
 import { BILLING, load, RelayProvider, save, useRelay } from "./store";
 
 const PANELS = {
@@ -27,10 +28,12 @@ const PANELS = {
   result: ResultPanel,
   metrics: MetricsPanel,
   journal: JournalPanel,
+  files: FilesPanel,
+  exec: ExecPanel,
 };
 
 /** Incrémenter si la liste des panneaux change (invalide les dispositions mémorisées). */
-const LAYOUT_KEY = "relay.layout.v3";
+const LAYOUT_KEY = "relay.layout.v4";
 
 function defaultLayout(api: DockviewApi): void {
   api.clear();
@@ -38,11 +41,13 @@ function defaultLayout(api: DockviewApi): void {
   api.addPanel({ id: "pipeline", component: "pipeline", title: "Pipeline", position: { referencePanel: "routing", direction: "right" } });
   api.addPanel({ id: "composer", component: "composer", title: "Demande", position: { referencePanel: "pipeline", direction: "above" } });
   api.addPanel({ id: "detail", component: "detail", title: "Tâche", position: { referencePanel: "pipeline", direction: "right" } });
+  api.addPanel({ id: "files", component: "files", title: "Fichiers", position: { referencePanel: "detail", direction: "within" }, inactive: true });
   api.addPanel({ id: "result", component: "result", title: "Résultat", position: { referencePanel: "detail", direction: "within" }, inactive: true });
   api.addPanel({ id: "journal", component: "journal", title: "Journal", position: { referencePanel: "pipeline", direction: "below" } });
+  api.addPanel({ id: "exec", component: "exec", title: "Exécution", position: { referencePanel: "journal", direction: "within" }, inactive: true });
   api.addPanel({ id: "metrics", component: "metrics", title: "Coûts", position: { referencePanel: "journal", direction: "within" }, inactive: true });
   api.getPanel("routing")?.group.api.setSize({ width: 330 });
-  api.getPanel("detail")?.group.api.setSize({ width: 420 });
+  api.getPanel("detail")?.group.api.setSize({ width: 480 });
   api.getPanel("composer")?.group.api.setSize({ height: 150 });
   api.getPanel("journal")?.group.api.setSize({ height: 240 });
 }
@@ -111,6 +116,8 @@ function Shell(): React.JSX.Element {
       </header>
 
       {r.serverDown ? <div className="banner">Moteur Relay injoignable — reconnexion automatique…</div> : null}
+
+      <ApprovalBar />
 
       {r.error !== null ? (
         <div className="error-zone">
