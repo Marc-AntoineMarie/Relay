@@ -10,15 +10,18 @@
  * - `POST /api/keys`   : enregistre une clé dans `.env` ; `/api/keys/test`, `/api/keys/delete`.
  * - `POST /api/run`    : exécute un pipeline (mode auto ou manuel), streame les événements en SSE.
  * - `POST /api/approve` : valide/refuse une commande d'agent (mode Prudent).
- * - `/api/workspace/*` : runs précédents, fichiers d'un run, lancer une commande, ouvrir le dossier.
+ * - `/api/workspace/*` : runs précédents, fichiers d'un run, lancer une commande (ou une app suivie
+ *   jusqu'à sa fermeture), ouvrir le dossier.
+ * - `GET /ws/<run>/<chemin>` : fichiers d'un run servis pour l'aperçu (erreurs JS remontées).
  * - sert l'app web buildée (packages/web/dist) si présente.
  *
- * Écoute uniquement sur 127.0.0.1 (outil local).
+ * Outil local : l'API refuse les requêtes d'une autre origine (un site web ouvert dans le
+ * navigateur ne peut pas la piloter) et les noms d'hôte autres que localhost (DNS rebinding).
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, normalize, extname, dirname, isAbsolute } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import {
@@ -44,6 +47,7 @@ import {
   type BillingMode,
   type CommandPolicy,
   type Effort,
+  type ExecutorOptions,
   type ErrorDescription,
   type LogEntry,
   type Pipeline,
@@ -68,12 +72,24 @@ import {
 import {
   confineRunDir,
   DEFAULT_WORKSPACE_ROOT,
+  describeEnvironment,
   detectEnvironment,
   expandHome,
   listRunDirs,
   newRunDir,
   openDir,
 } from "./workspace.js";
+import {
+  appendTurn,
+  fixPipeline,
+  lastContracts,
+  loadSession,
+  renumber,
+  sessionContext,
+  turnFromPipeline,
+  type FixRequest,
+  type SessionTurn,
+} from "./session.js";
 
 const TIERS: readonly RouteTier[] = ["quick", "build", "deep"];
 /** Effort par tier pour les backends à réflexion réglable (reasoning_effort). */
@@ -312,14 +328,24 @@ function checkClaudeCli(): Promise<string> {
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  const data = JSON.stringify(body);
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  });
-  res.end(data);
+  // Pas d'en-têtes CORS : seule l'interface Relay (même origine) parle à l'API.
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(body));
+}
+
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** Requête venant de l'interface Relay elle-même : hôte local, et même origine si le navigateur l'indique. */
+function trustedRequest(req: IncomingMessage): boolean {
+  const host = req.headers.host ?? "";
+  if (!LOCAL_HOSTS.has(host.replace(/:\d+$/, ""))) return false;
+  const origin = req.headers.origin;
+  if (origin === undefined) return true;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
 }
 
 async function readBody(req: IncomingMessage): Promise<unknown> {
@@ -430,6 +456,10 @@ interface RunBody {
   budgetPerRun?: number | null;
   /** Étape de synthèse. Absent ⇒ réglages. */
   synthesis?: boolean;
+  /** Continuer dans le dossier d'un run existant (session). */
+  workspace?: string;
+  /** Corriger une erreur rencontrée en testant (sans re-planification). */
+  fix?: FixRequest;
 }
 
 /**
@@ -503,35 +533,112 @@ function requestApproval(res: ServerResponse, signal: AbortSignal, req: { taskId
 
 interface AgentSetup {
   cwd: string;
-  /** Pour le planificateur : dossier neuf, outils réellement installés. */
+  /** Pour le planificateur et les agents : dossier, outils installés, travail déjà fait. */
   conventions?: string;
   workspace?: Workspace;
   runTask?: RunTask;
+  /** Numéro du tour dans la session du dossier (1 = premier run). */
+  round: number;
+  /** Contrats du dernier tour, repris si le nouveau plan n'en donne pas. */
+  contracts?: string;
 }
 
-/** Mode agentique : un dossier neuf par run, annoncé à l'interface. */
-async function setupAgent(settings: RelaySettings, prompt: string, res: ServerResponse, signal: AbortSignal): Promise<AgentSetup> {
-  if (!settings.agentic) return { cwd: ROOT_DIR };
-  const workspace = new Workspace(newRunDir(settings.workspaceRoot, prompt));
-  const environment = await detectEnvironment();
-  sseWrite(res, { type: "workspace", root: workspace.root, policy: settings.commandPolicy });
+/** Mode agentique : un dossier neuf par run, ou le dossier d'un run existant (suite, correction). */
+async function setupAgent(
+  settings: RelaySettings,
+  prompt: string,
+  body: RunBody,
+  res: ServerResponse,
+  signal: AbortSignal,
+): Promise<AgentSetup> {
+  if (!settings.agentic) {
+    if (body.fix !== undefined || body.workspace !== undefined) {
+      throw new ConfigError("continuer ou corriger un run demande le mode agent (Réglages › Général)");
+    }
+    return { cwd: ROOT_DIR, round: 1 };
+  }
+  const continued = body.workspace !== undefined;
+  const workspace = new Workspace(continued ? runRoot(body.workspace) : newRunDir(settings.workspaceRoot, prompt));
+  const session = loadSession(workspace.root);
+  const round = session.turns.length + 1;
+  const machine = await detectEnvironment();
+  const environment = describeEnvironment(machine);
+  const noTk = machine.missing.some((m) => m.startsWith("tkinter"));
+  sseWrite(res, { type: "workspace", root: workspace.root, policy: settings.commandPolicy, round });
   sseLog(res, {
     level: "info",
     category: "info",
-    title: `Dossier de travail : ${workspace.root}`,
-    detail: `Commandes des agents : ${POLICY_LABEL[settings.commandPolicy]}\nOutils détectés : ${environment || "aucun"}`,
+    title: round > 1 ? `Suite dans ${workspace.root} · tour ${round}` : `Dossier de travail : ${workspace.root}`,
+    detail: `Commandes des agents : ${POLICY_LABEL[settings.commandPolicy]}\nOutils détectés : ${environment}`,
   });
+  const contracts = lastContracts(session);
   return {
     cwd: workspace.root,
-    conventions: `Dossier de travail neuf et vide. Outils installés : ${environment || "inconnus"}. Rien d'autre n'est installé et les agents ne peuvent pas installer de paquets : bibliothèque standard uniquement (ex. unittest si pytest n'est pas listé).`,
+    conventions: [
+      round > 1
+        ? "Dossier de travail existant, sur la machine de l'utilisateur : ses fichiers et le travail déjà fait sont décrits ci-dessous."
+        : "Dossier de travail neuf et vide, sur la machine de l'utilisateur.",
+      `Outils : ${environment}.`,
+      "Rien d'autre n'est installé et les agents ne peuvent pas installer de paquets : n'utilise que ce qui est présent.",
+      noTk
+        ? "Interface graphique demandée : tkinter est absent, donc fais une page HTML autonome (HTML + CSS + JavaScript dans un seul fichier, ouverte dans le navigateur), avec la logique testable à part si besoin ; sinon une interface en ligne de commande."
+        : "",
+      sessionContext(session),
+    ]
+      .filter(Boolean)
+      .join("\n"),
     workspace,
+    round,
+    ...(contracts !== undefined ? { contracts } : {}),
     runTask: agenticRunTask({
       workspace,
       policy: settings.commandPolicy,
-      ...(environment ? { environment } : {}),
+      environment,
       approve: (r) => requestApproval(res, signal, r),
     }),
   };
+}
+
+const agentContext = (agent: AgentSetup): Pipeline["context"] => ({
+  cwd: agent.cwd,
+  ...(agent.conventions !== undefined ? { conventions: agent.conventions } : {}),
+});
+
+/** Correction directe : une tâche d'agent avec l'erreur et l'historique, sans planificateur. */
+function startFix(fix: FixRequest, agent: AgentSetup, res: ServerResponse): Pipeline {
+  sseLog(res, {
+    level: "info",
+    category: "plan",
+    title: `Correction directe (sans re-planification) : ${fix.source}`,
+    detail: `${fix.note ? `Précision : ${fix.note}\n\n` : ""}${fix.output}`,
+  });
+  return fixPipeline(fix, agentContext(agent), agent.contracts);
+}
+
+/** Ids du tour, contrats repris, dossier : le pipeline est prêt à s'exécuter dans la session. */
+function attachToSession(pipeline: Pipeline, agent: AgentSetup): void {
+  renumber(pipeline, agent.round);
+  if (pipeline.contracts === undefined && agent.contracts !== undefined) pipeline.contracts = agent.contracts;
+  if (agent.workspace !== undefined) pipeline.workspace = agent.workspace.root;
+}
+
+/** Exécute, streame, puis inscrit le tour dans la session du dossier (même en cas d'échec). */
+async function executeAndRecord(opts: ExecutorOptions, res: ServerResponse, agent: AgentSetup, body: RunBody, prompt: string): Promise<void> {
+  let synthesis: string | undefined;
+  let outcome: SessionTurn["outcome"] = "stopped";
+  try {
+    for await (const event of execute(opts)) {
+      sseWrite(res, event satisfies PipelineEvent);
+      if (event.type === "pipeline:synthesis") synthesis = event.text;
+      else if (event.type === "pipeline:done") outcome = "done";
+      else if (event.type === "pipeline:failed") outcome = opts.signal?.aborted === true ? "stopped" : "failed";
+    }
+  } finally {
+    if (agent.workspace !== undefined) {
+      const kind = body.fix !== undefined ? "fix" : "plan";
+      appendTurn(agent.workspace.root, turnFromPipeline(opts.pipeline, kind, prompt, outcome, synthesis, body.fix?.output));
+    }
+  }
 }
 
 /** Mode manuel : un backend, un modèle par tier. */
@@ -544,23 +651,26 @@ async function runManual(body: RunBody, prompt: string, res: ServerResponse, sig
   const settings = loadSettings();
   const provider = createProvider(providerName, { cwd: ROOT_DIR });
   sseWrite(res, { type: "mode", mode: "manual", accounts: [PROVIDER_PRESETS[providerName]?.label ?? providerName] });
-  const agent = await setupAgent(settings, prompt, res, signal);
-  sseWrite(res, { type: "decomposing", provider: providerName, model: config.decomposer.model });
-  const pipeline = await decompose({
-    prompt,
-    context: { cwd: agent.cwd, ...(agent.conventions !== undefined ? { conventions: agent.conventions } : {}) },
-    provider,
-    model: config.decomposer,
-    onLog: (entry) => sseWrite(res, { type: "log", entry }),
-  });
-
-  if (agent.workspace !== undefined) pipeline.workspace = agent.workspace.root;
-  sseWrite(res, { type: "routes", routes: config.routes });
-  const synthesis = body.synthesis ?? settings.synthesis;
-  const runTask = agent.runTask !== undefined ? { runTask: agent.runTask } : {};
-  for await (const event of execute({ pipeline, provider, router: new Router(config), signal, synthesis, ...runTask })) {
-    sseWrite(res, event satisfies PipelineEvent);
+  const agent = await setupAgent(settings, prompt, body, res, signal);
+  let pipeline: Pipeline;
+  if (body.fix !== undefined) {
+    pipeline = startFix(body.fix, agent, res);
+  } else {
+    sseWrite(res, { type: "decomposing", provider: providerName, model: config.decomposer.model });
+    pipeline = await decompose({
+      prompt,
+      context: agentContext(agent),
+      provider,
+      model: config.decomposer,
+      onLog: (entry) => sseWrite(res, { type: "log", entry }),
+    });
   }
+  attachToSession(pipeline, agent);
+
+  sseWrite(res, { type: "routes", routes: config.routes });
+  const synthesis = body.fix === undefined && (body.synthesis ?? settings.synthesis);
+  const runTask = agent.runTask !== undefined ? { runTask: agent.runTask } : {};
+  await executeAndRecord({ pipeline, provider, router: new Router(config), signal, synthesis, ...runTask }, res, agent, body, prompt);
 }
 
 /** Mode auto : le routeur choisit, pour le plan puis pour chaque tâche, parmi tous les comptes. */
@@ -603,7 +713,7 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
     return p;
   };
 
-  const agent = await setupAgent(settings, prompt, res, signal);
+  const agent = await setupAgent(settings, prompt, body, res, signal);
 
   // Planificateur : choisi par le même routeur (niveau build, deep en stratégie qualité).
   const plannerTier: RouteTier = strategy === "quality" ? "deep" : "build";
@@ -612,15 +722,15 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
     throw new ConfigError("aucun compte utilisable en mode auto : ajoute une clé ou active un compte dans le panneau Modèles");
   }
 
-  let pipeline: Pipeline | undefined;
-  for (const [i, c] of planners.entries()) {
+  let pipeline: Pipeline | undefined = body.fix !== undefined ? startFix(body.fix, agent, res) : undefined;
+  for (const [i, c] of pipeline === undefined ? planners.entries() : []) {
     sseLog(res, { level: "info", category: "route", title: `Planificateur → ${c.provider} · ${c.model}`, detail: `Raison : ${c.reason}` });
     sseWrite(res, { type: "decomposing", provider: c.provider, model: c.model });
     try {
       router.consume(c.provider);
       pipeline = await decompose({
         prompt,
-        context: { cwd: agent.cwd, ...(agent.conventions !== undefined ? { conventions: agent.conventions } : {}) },
+        context: agentContext(agent),
         provider: getProvider(c.provider),
         model: { provider: c.provider, model: c.model, ...(c.effort !== undefined ? { effort: c.effort } : {}) },
         onLog: (entry) => sseWrite(res, { type: "log", entry }),
@@ -643,12 +753,17 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
   }
   if (pipeline === undefined) throw new ConfigError("planification impossible");
   router.spend(pipeline.planning?.billedCost ?? 0); // le plan compte dans le budget
-  if (agent.workspace !== undefined) pipeline.workspace = agent.workspace.root;
+  attachToSession(pipeline, agent);
 
   const runTask = agent.runTask !== undefined ? { runTask: agent.runTask } : {};
-  for await (const event of execute({ pipeline, routing: autoRouting(router, getProvider, health), signal, synthesis, ...runTask })) {
-    sseWrite(res, event satisfies PipelineEvent);
-  }
+  const withSynthesis = synthesis && body.fix === undefined; // correction : rapide, pas de synthèse
+  await executeAndRecord(
+    { pipeline, routing: autoRouting(router, getProvider, health), signal, synthesis: withSynthesis, ...runTask },
+    res,
+    agent,
+    body,
+    prompt,
+  );
 }
 
 async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -663,7 +778,6 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
-    "Access-Control-Allow-Origin": "*",
   });
 
   // Le client (bouton « Arrêter », fenêtre fermée) coupe la connexion → on arrête le pipeline.
@@ -722,16 +836,114 @@ async function handleWorkspaceRun(req: IncomingMessage, res: ServerResponse): Pr
     return;
   }
   if (body.detached === true) {
-    const pid = await launchCommand(command, root);
-    sendJson(res, 200, { command, launched: true, pid });
+    const entry: Launch = { id: randomUUID(), root, command, logPath: "", exited: false, exitCode: null };
+    const r = await launchCommand(command, root, {
+      onExit: (code) => {
+        entry.exited = true;
+        entry.exitCode = code;
+      },
+    });
+    Object.assign(entry, { logPath: r.logPath, ...(r.pid !== undefined ? { pid: r.pid } : {}) });
+    if (r.exited) Object.assign(entry, { exited: true, exitCode: r.exitCode });
+    launches.set(entry.id, entry);
+    sendJson(res, 200, { id: entry.id, command, ...r });
     return;
   }
   sendJson(res, 200, await runCommand(command, { cwd: root, timeoutMs: 60_000, ...(body.stdin !== undefined ? { stdin: body.stdin } : {}) }));
 }
 
+/** Applications lancées depuis le panneau Exécution : suivies jusqu'à leur fermeture. */
+interface Launch {
+  id: string;
+  root: string;
+  command: string;
+  pid?: number;
+  logPath: string;
+  exited: boolean;
+  exitCode: number | null;
+}
+const launches = new Map<string, Launch>();
+
+function readLog(path: string): string {
+  try {
+    const out = readFileSync(path, "utf8");
+    return out.length > 12_000 ? `[…début tronqué…]\n${out.slice(-12_000)}` : out;
+  } catch {
+    return "";
+  }
+}
+
+function handleWorkspaceLaunches(req: IncomingMessage, res: ServerResponse): void {
+  const root = runRoot(query(req).get("root"));
+  const list = [...launches.values()]
+    .filter((l) => l.root === root)
+    .map((l) => ({ id: l.id, command: l.command, running: !l.exited, exitCode: l.exitCode, output: readLog(l.logPath) }));
+  sendJson(res, 200, { launches: list });
+}
+
+async function handleWorkspaceStop(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const { id = "" } = (await readBody(req)) as { id?: string };
+  const l = launches.get(id);
+  if (l?.pid !== undefined && !l.exited) {
+    try {
+      process.kill(-l.pid, "SIGTERM"); // tout le groupe (l'app et ses enfants)
+    } catch {
+      /* déjà terminée */
+    }
+  }
+  sendJson(res, l !== undefined ? 200 : 404, { found: l !== undefined });
+}
+
+// ── Aperçu : fichiers d'un run servis à une iframe isolée (sandbox) ─────────
+
+const PREVIEW_TYPES: Record<string, string> = {
+  ...CONTENT_TYPES,
+  ".htm": "text/html; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
+  ".md": "text/plain; charset=utf-8",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+/** Injecté en tête des pages : remonte les erreurs JavaScript à Relay (postMessage). */
+const PREVIEW_REPORTER = `<script>(function(){function s(m){try{parent.postMessage({relayPreview:true,message:String(m)},"*")}catch(e){}}
+addEventListener("error",function(e){var t=e.target;if(t&&t!==window&&(t.src||t.href)){s("Ressource introuvable : "+(t.src||t.href).split("/").pop());return}
+s((e.message||"Erreur")+(e.filename?" ("+e.filename.split("/").pop()+":"+e.lineno+")":""))},true);
+addEventListener("unhandledrejection",function(e){s("Promesse rejetée : "+(e.reason&&e.reason.message||e.reason))});
+var ce=console.error;console.error=function(){s([].slice.call(arguments).join(" "));return ce.apply(console,arguments)}})();</script>`;
+
+function serveWorkspaceFile(url: string, res: ServerResponse): void {
+  const [, , name = "", ...rest] = url.split("/").map((p) => decodeURIComponent(p));
+  const base = loadSettings().workspaceRoot;
+  const ws = new Workspace(confineRunDir(base, join(base, name)));
+  let file = ws.resolve(rest.join("/") || "index.html");
+  if (existsSync(file) && statSync(file).isDirectory()) file = join(file, "index.html");
+  if (!existsSync(file) || !statSync(file).isFile()) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("fichier introuvable");
+    return;
+  }
+  const type = PREVIEW_TYPES[extname(file).toLowerCase()] ?? "application/octet-stream";
+  let body: Buffer | string = readFileSync(file);
+  if (type.startsWith("text/html")) {
+    const html = body.toString("utf8");
+    const at = /<head[^>]*>/i.exec(html);
+    body = at !== null ? html.slice(0, at.index + at[0].length) + PREVIEW_REPORTER + html.slice(at.index + at[0].length) : PREVIEW_REPORTER + html;
+  }
+  res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+  res.end(body);
+}
+
 async function handleWorkspaceOpen(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const body = (await readBody(req)) as { root?: string; target?: string };
-  await openDir(runRoot(body.root), body.target === "vscode" ? "vscode" : "folder");
+  const body = (await readBody(req)) as { root?: string; target?: string; path?: string };
+  const root = runRoot(body.root);
+  // Un fichier précis (ex. page HTML → navigateur), confiné au dossier du run.
+  const target = typeof body.path === "string" && body.path.length > 0 ? new Workspace(root).resolve(body.path) : root;
+  await openDir(target, body.target === "vscode" ? "vscode" : "folder");
   sendJson(res, 200, { ok: true });
 }
 
@@ -756,8 +968,13 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
 function handler(req: IncomingMessage, res: ServerResponse): void {
   const url = (req.url ?? "/").split("?")[0] ?? "/";
 
+  if (url.startsWith("/api/") && !trustedRequest(req)) {
+    sendJson(res, 403, { error: "requête refusée : origine non autorisée" });
+    return;
+  }
   if (req.method === "OPTIONS") {
-    sendJson(res, 204, {});
+    res.writeHead(204);
+    res.end();
     return;
   }
 
@@ -777,10 +994,13 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       if (url === "/api/workspace/file" && req.method === "GET") return handleWorkspaceFile(req, res);
       if (url === "/api/workspace/run" && req.method === "POST") return await handleWorkspaceRun(req, res);
       if (url === "/api/workspace/open" && req.method === "POST") return await handleWorkspaceOpen(req, res);
+      if (url === "/api/workspace/launches" && req.method === "GET") return handleWorkspaceLaunches(req, res);
+      if (url === "/api/workspace/stop" && req.method === "POST") return await handleWorkspaceStop(req, res);
+      if (url.startsWith("/ws/") && req.method === "GET") return serveWorkspaceFile(url, res);
       return serveStatic(req, res);
     } catch (err) {
       // Erreurs des endpoints de l'espace de travail : 400 lisible (chemin refusé, fichier introuvable…).
-      const status = url.startsWith("/api/workspace/") ? 400 : 500;
+      const status = url.startsWith("/api/workspace/") || url.startsWith("/ws/") ? 400 : 500;
       if (!res.headersSent) sendJson(res, status, { error: err instanceof Error ? err.message : String(err) });
       else res.end();
     }

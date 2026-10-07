@@ -2,7 +2,16 @@ import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { confineRunDir, listRunDirs, newRunDir, runDirName } from "../src/workspace.js";
+import { confineRunDir, describeEnvironment, listRunDirs, newRunDir, runDirName } from "../src/workspace.js";
+
+describe("environnement de la machine", () => {
+  it("signale les modules absents aux agents", () => {
+    expect(describeEnvironment({ tools: "python3 3.13.5", missing: ["tkinter (aucune interface graphique Tk possible)"] })).toBe(
+      "python3 3.13.5 — ABSENTS : tkinter (aucune interface graphique Tk possible)",
+    );
+    expect(describeEnvironment({ tools: "node 22.1.0", missing: [] })).toBe("node 22.1.0");
+  });
+});
 
 describe("dossiers de run", () => {
   it("nomme le dossier par date puis par sujet", () => {

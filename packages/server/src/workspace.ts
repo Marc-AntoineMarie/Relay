@@ -67,7 +67,9 @@ export function listRunDirs(base: string, max = 40): RunDir[] {
 
 const TOOLS: Array<[label: string, cmd: string, args: string[]]> = [
   ["python3", "python3", ["--version"]],
+  ["python", "python", ["--version"]],
   ["pytest", "python3", ["-m", "pytest", "--version"]],
+  ["tkinter", "python3", ["-c", "import tkinter; print(tkinter.TkVersion)"]],
   ["node", "node", ["--version"]],
   ["gcc", "gcc", ["--version"]],
   ["go", "go", ["version"]],
@@ -75,10 +77,24 @@ const TOOLS: Array<[label: string, cmd: string, args: string[]]> = [
   ["java", "javac", ["-version"]],
 ];
 
-let environment: Promise<string> | undefined;
+/** Modules Python souvent supposés présents alors qu'ils sont empaquetés à part (Debian : python3-tk). */
+const PYTHON_EXTRAS: Record<string, string> = {
+  python: "commande « python » (écrire python3)",
+  pytest: "pytest (utiliser unittest)",
+  tkinter: "tkinter (aucune interface graphique Tk possible)",
+};
+
+export interface MachineEnvironment {
+  /** Outils présents, avec version. */
+  tools: string;
+  /** Modules courants absents, à signaler pour ne pas écrire du code qui ne démarrera pas. */
+  missing: string[];
+}
+
+let environment: Promise<MachineEnvironment> | undefined;
 
 /** Outils présents sur la machine (indiqués aux agents pour qu'ils écrivent du code lançable ici). */
-export function detectEnvironment(): Promise<string> {
+export function detectEnvironment(): Promise<MachineEnvironment> {
   environment ??= Promise.all(
     TOOLS.map(
       ([label, cmd, args]) =>
@@ -89,11 +105,21 @@ export function detectEnvironment(): Promise<string> {
           });
         }),
     ),
-  ).then((found) => found.filter(Boolean).join(", "));
+  ).then((found) => {
+    const present = found.filter(Boolean);
+    const has = (label: string): boolean => present.some((t) => t.startsWith(`${label} `));
+    const missing = has("python3") ? Object.keys(PYTHON_EXTRAS).filter((m) => !has(m)).map((m) => PYTHON_EXTRAS[m] ?? m) : [];
+    return { tools: present.join(", "), missing };
+  });
   return environment;
 }
 
-/** Ouvre le dossier dans le gestionnaire de fichiers, ou dans VS Code. */
+/** Une ligne pour les agents : présents, puis absents. */
+export function describeEnvironment(env: MachineEnvironment): string {
+  return `${env.tools || "aucun outil détecté"}${env.missing.length > 0 ? ` — ABSENTS : ${env.missing.join(", ")}` : ""}`;
+}
+
+/** Ouvre un dossier (gestionnaire de fichiers), un fichier (application par défaut, ex. navigateur pour .html), ou VS Code. */
 export function openDir(root: string, target: "folder" | "vscode"): Promise<void> {
   const os = platform();
   const cmd = target === "vscode" ? "code" : os === "darwin" ? "open" : os === "win32" ? "explorer" : "xdg-open";
