@@ -22,10 +22,14 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, normalize, extname, dirname, isAbsolute } from "node:path";
+import { basename, join, normalize, extname, dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import {
   agenticRunTask,
+  clipMemory,
+  MEMORY_FILE,
+  updateProjectMemory,
+  type ModelAssignment,
   AutoRouter,
   autoRouting,
   checkCommand,
@@ -70,13 +74,10 @@ import {
   suggestTierModels,
 } from "@relay/providers";
 import {
-  confineRunDir,
   DEFAULT_WORKSPACE_ROOT,
   describeEnvironment,
   detectEnvironment,
   expandHome,
-  listRunDirs,
-  newRunDir,
   openDir,
 } from "./workspace.js";
 import {
@@ -90,6 +91,20 @@ import {
   type FixRequest,
   type SessionTurn,
 } from "./session.js";
+import {
+  appendMessage,
+  checkImportable,
+  conversationContext,
+  expandPath,
+  loadConversation,
+  ProjectStore,
+  readMemory,
+  slugify,
+  suggestName,
+  uniqueDir,
+  writeMemory,
+  type ConversationMessage,
+} from "./projects.js";
 
 const TIERS: readonly RouteTier[] = ["quick", "build", "deep"];
 /** Effort par tier pour les backends à réflexion réglable (reasoning_effort). */
@@ -204,6 +219,12 @@ interface RelaySettings {
   workspaceRoot: string;
   /** Commandes des agents : ask (Prudent), safe (Sûr), auto (Libre). */
   commandPolicy: CommandPolicy;
+  /** Le planificateur peut poser des questions de cadrage si la demande est floue. */
+  askQuestions: boolean;
+  /** Mémoire globale : tes préférences, transmises à chaque projet. */
+  globalMemory: string;
+  /** Tenir à jour RELAY.md (mémoire du projet) après chaque tour. */
+  projectMemory: boolean;
 }
 
 const POLICIES: readonly CommandPolicy[] = ["ask", "safe", "auto"];
@@ -223,6 +244,9 @@ const DEFAULT_SETTINGS: RelaySettings = {
   agentic: true,
   workspaceRoot: DEFAULT_WORKSPACE_ROOT,
   commandPolicy: "safe",
+  askQuestions: true,
+  globalMemory: "",
+  projectMemory: true,
 };
 
 /** Réglages valides : les champs inconnus ou mal typés retombent sur les défauts. */
@@ -239,6 +263,9 @@ function sanitizeSettings(raw: Partial<RelaySettings>): RelaySettings {
         ? expandHome(raw.workspaceRoot.trim())
         : DEFAULT_SETTINGS.workspaceRoot,
     commandPolicy: raw.commandPolicy !== undefined && POLICIES.includes(raw.commandPolicy) ? raw.commandPolicy : DEFAULT_SETTINGS.commandPolicy,
+    askQuestions: typeof raw.askQuestions === "boolean" ? raw.askQuestions : DEFAULT_SETTINGS.askQuestions,
+    globalMemory: typeof raw.globalMemory === "string" ? raw.globalMemory.slice(0, 4_000) : DEFAULT_SETTINGS.globalMemory,
+    projectMemory: typeof raw.projectMemory === "boolean" ? raw.projectMemory : DEFAULT_SETTINGS.projectMemory,
   };
 }
 
@@ -456,8 +483,12 @@ interface RunBody {
   budgetPerRun?: number | null;
   /** Étape de synthèse. Absent ⇒ réglages. */
   synthesis?: boolean;
-  /** Continuer dans le dossier d'un run existant (session). */
+  /** Continuer dans le dossier d'un projet existant (conversation, mémoire, session). */
   workspace?: string;
+  /** Nouveau projet : nom (sinon tiré de la demande) et emplacement (sinon racine des runs). */
+  project?: { name?: string; location?: string };
+  /** « answer » : réponses aux questions de cadrage (le planificateur n'en repose pas). */
+  kind?: "prompt" | "answer";
   /** Corriger une erreur rencontrée en testant (sans re-planification). */
   fix?: FixRequest;
 }
@@ -533,17 +564,36 @@ function requestApproval(res: ServerResponse, signal: AbortSignal, req: { taskId
 
 interface AgentSetup {
   cwd: string;
-  /** Pour le planificateur et les agents : dossier, outils installés, travail déjà fait. */
+  /** Pour le planificateur et les agents : outils, préférences, mémoire, conversation, travail déjà fait. */
   conventions?: string;
   workspace?: Workspace;
   runTask?: RunTask;
+  /** Nom du projet (= nom du dossier). */
+  name: string;
+  /** Outils de la machine, présents et absents (transmis aussi à la mémoire du projet). */
+  environment?: string;
   /** Numéro du tour dans la session du dossier (1 = premier run). */
   round: number;
   /** Contrats du dernier tour, repris si le nouveau plan n'en donne pas. */
   contracts?: string;
 }
 
-/** Mode agentique : un dossier neuf par run, ou le dossier d'un run existant (suite, correction). */
+const projects = new ProjectStore(
+  () => join(ROOT_DIR, ".relay", "projects.json"),
+  () => loadSettings().workspaceRoot,
+);
+
+/** Dossier du projet : nom simple (proposé ou choisi), emplacement facultatif ; inscrit s'il est ailleurs. */
+function createProjectDir(settings: RelaySettings, prompt: string, body: RunBody): string {
+  const location = body.project?.location?.trim() ? expandPath(body.project.location) : settings.workspaceRoot;
+  if (!isAbsolute(location)) throw new ConfigError("emplacement du projet : chemin absolu attendu (ou commençant par ~/)");
+  const root = uniqueDir(location, slugify(body.project?.name?.trim() || suggestName(prompt)));
+  mkdirSync(root, { recursive: true });
+  if (resolve(location) !== resolve(settings.workspaceRoot)) projects.register(root);
+  return root;
+}
+
+/** Mode agentique : un projet neuf, ou un projet existant (suite, réponses, correction). */
 async function setupAgent(
   settings: RelaySettings,
   prompt: string,
@@ -553,41 +603,59 @@ async function setupAgent(
 ): Promise<AgentSetup> {
   if (!settings.agentic) {
     if (body.fix !== undefined || body.workspace !== undefined) {
-      throw new ConfigError("continuer ou corriger un run demande le mode agent (Réglages › Général)");
+      throw new ConfigError("continuer ou corriger un projet demande le mode agent (Réglages › Général)");
     }
-    return { cwd: ROOT_DIR, round: 1 };
+    return { cwd: ROOT_DIR, round: 1, name: "", ...(settings.globalMemory.trim() ? { conventions: preferences(settings) } : {}) };
   }
   const continued = body.workspace !== undefined;
-  const workspace = new Workspace(continued ? runRoot(body.workspace) : newRunDir(settings.workspaceRoot, prompt));
+  const workspace = new Workspace(continued ? runRoot(body.workspace) : createProjectDir(settings, prompt, body));
+  const name = basename(workspace.root);
   const session = loadSession(workspace.root);
   const round = session.turns.length + 1;
+  const memory = readMemory(workspace.root);
+  const conversation = loadConversation(workspace.root);
   const machine = await detectEnvironment();
   const environment = describeEnvironment(machine);
   const noTk = machine.missing.some((m) => m.startsWith("tkinter"));
-  sseWrite(res, { type: "workspace", root: workspace.root, policy: settings.commandPolicy, round });
+
+  // La demande entre dans la conversation du projet dès le départ.
+  appendMessage(
+    workspace.root,
+    body.fix !== undefined
+      ? { role: "user", kind: "fix", text: body.fix.note?.trim() || `Corriger l'erreur de ${body.fix.source}`, error: body.fix.output.slice(-3_000) }
+      : { role: "user", kind: body.kind === "answer" ? "answer" : "prompt", text: prompt },
+  );
+  sseWrite(res, { type: "workspace", root: workspace.root, name, policy: settings.commandPolicy, round });
   sseLog(res, {
     level: "info",
     category: "info",
-    title: round > 1 ? `Suite dans ${workspace.root} · tour ${round}` : `Dossier de travail : ${workspace.root}`,
-    detail: `Commandes des agents : ${POLICY_LABEL[settings.commandPolicy]}\nOutils détectés : ${environment}`,
+    title: round > 1 ? `Projet ${name} · tour ${round}` : `Nouveau projet ${name} : ${workspace.root}`,
+    detail: `Commandes des agents : ${POLICY_LABEL[settings.commandPolicy]}\nOutils détectés : ${environment}${
+      memory ? `\nMémoire du projet : ${MEMORY_FILE} (${memory.length} caractères)` : ""
+    }`,
   });
   const contracts = lastContracts(session);
   return {
     cwd: workspace.root,
     conventions: [
-      round > 1
-        ? "Dossier de travail existant, sur la machine de l'utilisateur : ses fichiers et le travail déjà fait sont décrits ci-dessous."
-        : "Dossier de travail neuf et vide, sur la machine de l'utilisateur.",
+      round > 1 || conversation.length > 0
+        ? "Projet existant, sur la machine de l'utilisateur : sa mémoire, la conversation et le travail déjà fait sont ci-dessous."
+        : "Projet neuf, dossier vide, sur la machine de l'utilisateur.",
       `Outils : ${environment}.`,
       "Rien d'autre n'est installé et les agents ne peuvent pas installer de paquets : n'utilise que ce qui est présent.",
       noTk
         ? "Interface graphique demandée : tkinter est absent, donc fais une page HTML autonome (HTML + CSS + JavaScript dans un seul fichier, ouverte dans le navigateur), avec la logique testable à part si besoin ; sinon une interface en ligne de commande."
         : "",
-      sessionContext(session),
+      preferences(settings),
+      memory ? `## Mémoire du projet (${MEMORY_FILE})\n${clipMemory(memory)}` : "",
+      conversationContext(conversation),
+      sessionContext(session, 2_500),
     ]
       .filter(Boolean)
       .join("\n"),
     workspace,
+    name,
+    environment,
     round,
     ...(contracts !== undefined ? { contracts } : {}),
     runTask: agenticRunTask({
@@ -598,6 +666,29 @@ async function setupAgent(
     }),
   };
 }
+
+const preferences = (settings: RelaySettings): string =>
+  settings.globalMemory.trim() ? `## Préférences de l'utilisateur (mémoire globale)\n${settings.globalMemory.trim()}` : "";
+
+/** Questions de cadrage : la conversation attend les réponses, rien ne s'exécute. */
+function askQuestions(pipeline: Pipeline, agent: AgentSetup, res: ServerResponse): boolean {
+  if (pipeline.tasks.length > 0 || (pipeline.questions ?? []).length === 0) return false;
+  const questions = pipeline.questions ?? [];
+  if (agent.workspace !== undefined) {
+    appendMessage(agent.workspace.root, {
+      role: "relay",
+      kind: "questions",
+      text: pipeline.analysis ?? "",
+      questions,
+      ...(pipeline.analysis !== undefined ? { analysis: pipeline.analysis } : {}),
+    });
+  }
+  sseWrite(res, { type: "questions", questions, analysis: pipeline.analysis ?? "" });
+  return true;
+}
+
+/** Modèles capables de tenir la mémoire du projet (petits, rapides, contexte long). */
+type MemoryModel = { provider: Provider; model: ModelAssignment };
 
 const agentContext = (agent: AgentSetup): Pipeline["context"] => ({
   cwd: agent.cwd,
@@ -622,21 +713,99 @@ function attachToSession(pipeline: Pipeline, agent: AgentSetup): void {
   if (agent.workspace !== undefined) pipeline.workspace = agent.workspace.root;
 }
 
-/** Exécute, streame, puis inscrit le tour dans la session du dossier (même en cas d'échec). */
-async function executeAndRecord(opts: ExecutorOptions, res: ServerResponse, agent: AgentSetup, body: RunBody, prompt: string): Promise<void> {
+/**
+ * Exécute, streame, puis inscrit le tour : session technique, réponse dans la conversation,
+ * et mise à jour de la mémoire du projet (RELAY.md) — même en cas d'échec.
+ */
+async function executeAndRecord(
+  opts: ExecutorOptions,
+  res: ServerResponse,
+  agent: AgentSetup,
+  body: RunBody,
+  prompt: string,
+  memoryModels: MemoryModel[],
+): Promise<void> {
   let synthesis: string | undefined;
   let outcome: SessionTurn["outcome"] = "stopped";
+  let failure: string | undefined;
+  let cost: ConversationMessage["cost"];
   try {
     for await (const event of execute(opts)) {
       sseWrite(res, event satisfies PipelineEvent);
       if (event.type === "pipeline:synthesis") synthesis = event.text;
-      else if (event.type === "pipeline:done") outcome = "done";
-      else if (event.type === "pipeline:failed") outcome = opts.signal?.aborted === true ? "stopped" : "failed";
+      else if (event.type === "pipeline:done") {
+        outcome = "done";
+        const m = event.metrics;
+        cost = { billed: m.totalBilledCost, reference: m.totalReferenceCost, durationMs: m.totalDurationMs, tokens: m.totalTokens };
+      } else if (event.type === "pipeline:failed") {
+        outcome = opts.signal?.aborted === true ? "stopped" : "failed";
+        failure = event.error;
+      }
     }
   } finally {
     if (agent.workspace !== undefined) {
-      const kind = body.fix !== undefined ? "fix" : "plan";
-      appendTurn(agent.workspace.root, turnFromPipeline(opts.pipeline, kind, prompt, outcome, synthesis, body.fix?.output));
+      const root = agent.workspace.root;
+      const p = opts.pipeline;
+      appendTurn(root, turnFromPipeline(p, body.fix !== undefined ? "fix" : "plan", prompt, outcome, synthesis, body.fix?.output));
+      const files = [...new Set(p.tasks.flatMap((t) => (Array.isArray(t.output?.data?.["files"]) ? (t.output?.data?.["files"] as string[]) : [])))];
+      const summaries = p.tasks.map((t) => t.output?.summary).filter((x): x is string => x !== undefined);
+      appendMessage(root, {
+        role: "relay",
+        kind: "result",
+        text: synthesis ?? (summaries.join("\n") || failure || "(aucun résultat)"),
+        outcome,
+        ...(p.analysis !== undefined ? { analysis: p.analysis } : {}),
+        ...(p.assumptions !== undefined ? { assumptions: p.assumptions } : {}),
+        tasks: p.tasks.map((t) => ({
+          id: t.id,
+          description: t.description,
+          tier: t.tier,
+          status: t.status,
+          ...(t.assignedModel !== undefined ? { model: t.assignedModel } : {}),
+          ...(t.attempts.at(-1)?.metrics.provider !== undefined ? { provider: t.attempts.at(-1)?.metrics.provider } : {}),
+        })),
+        files,
+        ...(cost !== undefined ? { cost } : {}),
+        ...(failure !== undefined ? { error: failure } : {}),
+      });
+      if (opts.signal?.aborted !== true && loadSettings().projectMemory) {
+        const turn = [
+          body.fix !== undefined ? `Correction demandée : ${body.fix.source}\n${body.fix.output.slice(-1_500)}` : `Demande : ${prompt}`,
+          p.analysis !== undefined ? `Analyse : ${p.analysis}` : "",
+          p.assumptions?.length ? `Hypothèses : ${p.assumptions.join(" ; ")}` : "",
+          `Tâches :\n${p.tasks.map((t) => `- [${t.id}] ${t.description} → ${t.status}${t.output?.summary ? ` — ${t.output.summary}` : ""}`).join("\n")}`,
+          synthesis !== undefined ? `Compte rendu :\n${synthesis.slice(0, 2_500)}` : "",
+          `Issue : ${outcome}${failure !== undefined ? ` (${failure})` : ""}`,
+          agent.environment !== undefined ? `Outils de la machine : ${agent.environment}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
+        await refreshMemory(agent, memoryModels, turn, res);
+      }
+    }
+  }
+}
+
+/** RELAY.md réécrit par un petit modèle à partir du tour qui vient de se terminer. */
+async function refreshMemory(agent: AgentSetup, models: MemoryModel[], turn: string, res: ServerResponse): Promise<void> {
+  if (agent.workspace === undefined) return;
+  const root = agent.workspace.root;
+  const files = agent.workspace.list().map((f) => f.path).filter((f) => f !== MEMORY_FILE);
+  for (const m of models) {
+    try {
+      const r = await updateProjectMemory({ provider: m.provider, model: m.model, projectName: agent.name, current: readMemory(root), turn, files });
+      if (r.text.trim().length < 40) throw new Error("mémoire vide ou trop courte");
+      writeMemory(root, r.text);
+      sseLog(res, {
+        level: "info",
+        category: "info",
+        title: `Mémoire du projet mise à jour (${MEMORY_FILE}) · ${m.model.provider} · ${r.servedModel ?? m.model.model} · ${r.outputTokens} tokens`,
+        detail: r.text,
+      });
+      sseWrite(res, { type: "memory", root });
+      return;
+    } catch (err) {
+      sseLog(res, { level: "warn", category: "fallback", title: `Mémoire : ${m.model.model} indisponible (${describeError(err).title.toLowerCase()})` });
     }
   }
 }
@@ -663,14 +832,17 @@ async function runManual(body: RunBody, prompt: string, res: ServerResponse, sig
       provider,
       model: config.decomposer,
       onLog: (entry) => sseWrite(res, { type: "log", entry }),
+      allowQuestions: settings.askQuestions && body.kind !== "answer",
     });
+    if (askQuestions(pipeline, agent, res)) return;
   }
   attachToSession(pipeline, agent);
 
   sseWrite(res, { type: "routes", routes: config.routes });
   const synthesis = body.fix === undefined && (body.synthesis ?? settings.synthesis);
   const runTask = agent.runTask !== undefined ? { runTask: agent.runTask } : {};
-  await executeAndRecord({ pipeline, provider, router: new Router(config), signal, synthesis, ...runTask }, res, agent, body, prompt);
+  const memoryModels: MemoryModel[] = [{ provider, model: config.routes.quick }];
+  await executeAndRecord({ pipeline, provider, router: new Router(config), signal, synthesis, ...runTask }, res, agent, body, prompt, memoryModels);
 }
 
 /** Mode auto : le routeur choisit, pour le plan puis pour chaque tâche, parmi tous les comptes. */
@@ -734,6 +906,7 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
         provider: getProvider(c.provider),
         model: { provider: c.provider, model: c.model, ...(c.effort !== undefined ? { effort: c.effort } : {}) },
         onLog: (entry) => sseWrite(res, { type: "log", entry }),
+        allowQuestions: settings.askQuestions && body.kind !== "answer",
       });
       health.reportSuccess(c.provider, c.model);
       break;
@@ -753,16 +926,22 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
   }
   if (pipeline === undefined) throw new ConfigError("planification impossible");
   router.spend(pipeline.planning?.billedCost ?? 0); // le plan compte dans le budget
+  if (askQuestions(pipeline, agent, res)) return;
   attachToSession(pipeline, agent);
 
   const runTask = agent.runTask !== undefined ? { runTask: agent.runTask } : {};
   const withSynthesis = synthesis && body.fix === undefined; // correction : rapide, pas de synthèse
+  const memoryModels: MemoryModel[] = router
+    .rank({ tier: "quick", needs: ["long_context"] })
+    .slice(0, 3)
+    .map((c) => ({ provider: getProvider(c.provider), model: { provider: c.provider, model: c.model, ...(c.effort !== undefined ? { effort: c.effort } : {}) } }));
   await executeAndRecord(
     { pipeline, routing: autoRouting(router, getProvider, health), signal, synthesis: withSynthesis, ...runTask },
     res,
     agent,
     body,
     prompt,
+    memoryModels,
   );
 }
 
@@ -807,11 +986,40 @@ async function handleApprove(req: IncomingMessage, res: ServerResponse): Promise
 }
 
 const query = (req: IncomingMessage): URLSearchParams => new URL(req.url ?? "", "http://localhost").searchParams;
-const runRoot = (root: unknown): string => confineRunDir(loadSettings().workspaceRoot, typeof root === "string" ? root : "");
+/** Dossier d'un projet connu (sous la racine des runs, ou inscrit) — sinon refus. */
+const runRoot = (root: unknown): string => projects.resolveProject(root);
 
 function handleWorkspaceRuns(res: ServerResponse): void {
-  const base = loadSettings().workspaceRoot;
-  sendJson(res, 200, { base, runs: listRunDirs(base) });
+  sendJson(res, 200, {
+    base: loadSettings().workspaceRoot,
+    runs: projects.list().map((p) => ({ name: p.name, root: p.root, modified: p.updated })),
+  });
+}
+
+// ── Projets : historique, conversation, mémoire, import ────────────────────
+
+function handleProjects(res: ServerResponse): void {
+  sendJson(res, 200, { base: loadSettings().workspaceRoot, projects: projects.list() });
+}
+
+function handleProjectDetail(req: IncomingMessage, res: ServerResponse): void {
+  const root = runRoot(query(req).get("root"));
+  sendJson(res, 200, { root, name: basename(root), messages: loadConversation(root), memory: readMemory(root) });
+}
+
+async function handleProjectMemory(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = (await readBody(req)) as { root?: string; content?: string };
+  const root = runRoot(body.root);
+  writeMemory(root, typeof body.content === "string" ? body.content.slice(0, 40_000) : "");
+  sendJson(res, 200, { ok: true });
+}
+
+/** Un dossier existant à toi devient un projet Relay (les agents pourront y écrire). */
+async function handleProjectImport(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = (await readBody(req)) as { root?: string };
+  const root = checkImportable(body.root ?? "", [ROOT_DIR]);
+  projects.register(root);
+  sendJson(res, 200, { root, name: basename(root) });
 }
 
 function handleWorkspaceFiles(req: IncomingMessage, res: ServerResponse): void {
@@ -916,10 +1124,10 @@ s((e.message||"Erreur")+(e.filename?" ("+e.filename.split("/").pop()+":"+e.linen
 addEventListener("unhandledrejection",function(e){s("Promesse rejetée : "+(e.reason&&e.reason.message||e.reason))});
 var ce=console.error;console.error=function(){s([].slice.call(arguments).join(" "));return ce.apply(console,arguments)}})();</script>`;
 
+/** `/ws/<dossier du projet en base64url>/<chemin>` : tout projet connu, où qu'il soit. */
 function serveWorkspaceFile(url: string, res: ServerResponse): void {
-  const [, , name = "", ...rest] = url.split("/").map((p) => decodeURIComponent(p));
-  const base = loadSettings().workspaceRoot;
-  const ws = new Workspace(confineRunDir(base, join(base, name)));
+  const [, , id = "", ...rest] = url.split("/").map((p) => decodeURIComponent(p));
+  const ws = new Workspace(runRoot(Buffer.from(id, "base64url").toString("utf8")));
   let file = ws.resolve(rest.join("/") || "index.html");
   if (existsSync(file) && statSync(file).isDirectory()) file = join(file, "index.html");
   if (!existsSync(file) || !statSync(file).isFile()) {
@@ -990,6 +1198,10 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       if (url === "/api/run" && req.method === "POST") return await handleRun(req, res);
       if (url === "/api/approve" && req.method === "POST") return await handleApprove(req, res);
       if (url === "/api/workspace/runs" && req.method === "GET") return handleWorkspaceRuns(res);
+      if (url === "/api/projects" && req.method === "GET") return handleProjects(res);
+      if (url === "/api/projects/detail" && req.method === "GET") return handleProjectDetail(req, res);
+      if (url === "/api/projects/memory" && req.method === "PUT") return await handleProjectMemory(req, res);
+      if (url === "/api/projects/import" && req.method === "POST") return await handleProjectImport(req, res);
       if (url === "/api/workspace/files" && req.method === "GET") return handleWorkspaceFiles(req, res);
       if (url === "/api/workspace/file" && req.method === "GET") return handleWorkspaceFile(req, res);
       if (url === "/api/workspace/run" && req.method === "POST") return await handleWorkspaceRun(req, res);
@@ -1000,7 +1212,7 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       return serveStatic(req, res);
     } catch (err) {
       // Erreurs des endpoints de l'espace de travail : 400 lisible (chemin refusé, fichier introuvable…).
-      const status = url.startsWith("/api/workspace/") || url.startsWith("/ws/") ? 400 : 500;
+      const status = url.startsWith("/api/workspace/") || url.startsWith("/api/projects") || url.startsWith("/ws/") ? 400 : 500;
       if (!res.headersSent) sendJson(res, status, { error: err instanceof Error ? err.message : String(err) });
       else res.end();
     }

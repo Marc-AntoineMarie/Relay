@@ -3,7 +3,8 @@
 // Le processus principal démarre le moteur Relay (serveur local, EN INTERNE) sur un
 // port libre, puis ouvre une fenêtre dessus. Aucune config réseau côté utilisateur :
 // pas de port à retenir, pas de souci localhost/IPv6, pas de serveur à lancer à part.
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const path = require("node:path");
 
 // Rendu logiciel : évite les crashs GPU sur certaines configs Linux (overhead négligeable
 // pour un dashboard). À retirer si tu veux l'accélération matérielle.
@@ -24,7 +25,7 @@ async function createWindow() {
     backgroundColor: "#0b0e14",
     title: "Relay",
     autoHideMenuBar: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, "preload.cjs") },
   });
 
   // Les liens externes (obtenir une clé API…) s'ouvrent dans le navigateur système.
@@ -38,6 +39,16 @@ async function createWindow() {
 
   await win.loadURL(`http://127.0.0.1:${started.port}`);
 }
+
+// Choix d'un dossier (projet) : renvoie le chemin, ou null si annulé.
+ipcMain.handle("relay:pick-folder", async (event, title) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const r = await dialog.showOpenDialog(win, {
+    title: typeof title === "string" ? title : "Choisir un dossier",
+    properties: ["openDirectory", "createDirectory"],
+  });
+  return r.canceled ? null : (r.filePaths[0] ?? null);
+});
 
 app.whenReady()
   .then(createWindow)
