@@ -8,7 +8,7 @@
  *  - JSON/plan invalide → relance de réparation (sortie fautive + erreur renvoyées au modèle).
  */
 import { z } from "zod";
-import { isCapability } from "../catalog.js";
+import { isCapability, referenceCost } from "../catalog.js";
 import type {
   CompletionRequest,
   LogEntry,
@@ -19,6 +19,7 @@ import type {
   Provider,
   StopReason,
   Task,
+  TaskMetrics,
 } from "../types.js";
 import { DECOMPOSER_SYSTEM_PROMPT } from "./system-prompt.js";
 
@@ -109,6 +110,10 @@ ${JSON.stringify(schema)}`,
 
   let maxTokens = INITIAL_MAX_TOKENS;
   let lastError: DecomposerError | undefined;
+  // Coût du plan, relances comprises : compté dans les totaux du pipeline.
+  const started = Date.now();
+  const usage = { inputTokens: 0, outputTokens: 0, thinkingTokens: 0 };
+  let servedModel = opts.model.model;
   const log = (entry: Omit<LogEntry, "at" | "category">): void =>
     opts.onLog?.({ at: Date.now(), category: "plan", ...entry });
 
@@ -118,7 +123,7 @@ ${JSON.stringify(schema)}`,
       title: `Plan : tentative ${attempt + 1} → ${opts.provider.name} · ${opts.model.model}`,
       detail: `[système]\n${DECOMPOSER_SYSTEM_PROMPT}\n\n[demande]\n${messages.at(-1)?.content ?? ""}`,
     });
-    const { text, stop } = await collect(opts.provider, {
+    const reply = await collect(opts.provider, {
       model: opts.model.model,
       effort: opts.model.effort,
       system: DECOMPOSER_SYSTEM_PROMPT,
@@ -126,6 +131,11 @@ ${JSON.stringify(schema)}`,
       format: { schema },
       maxTokens,
     });
+    const { text, stop } = reply;
+    usage.inputTokens += reply.inputTokens;
+    usage.outputTokens += reply.outputTokens;
+    usage.thinkingTokens += reply.thinkingTokens;
+    if (reply.servedModel !== undefined) servedModel = reply.servedModel;
 
     try {
       if (stop === "length") {
@@ -140,7 +150,7 @@ ${JSON.stringify(schema)}`,
           .map((t) => `[${t.id}] ${t.tier}/${t.type}${t.needs?.length ? ` {${t.needs.join(", ")}}` : ""} — ${t.description}`)
           .join("\n")}`,
       });
-      return buildPipeline(opts, plan);
+      return buildPipeline(opts, plan, planningMetrics(opts, servedModel, usage, started));
     } catch (err) {
       if (!(err instanceof DecomposerError)) throw err;
       lastError = err;
@@ -175,17 +185,51 @@ export function extractJson(raw: string): string {
   return start !== -1 && end > start ? body.slice(start, end + 1) : body.trim();
 }
 
-async function collect(
-  provider: Provider,
-  request: CompletionRequest,
-): Promise<{ text: string; stop: StopReason | undefined }> {
-  let text = "";
-  let stop: StopReason | undefined;
+interface Reply {
+  text: string;
+  stop: StopReason | undefined;
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens: number;
+  servedModel?: string;
+}
+
+async function collect(provider: Provider, request: CompletionRequest): Promise<Reply> {
+  const reply: Reply = { text: "", stop: undefined, inputTokens: 0, outputTokens: 0, thinkingTokens: 0 };
   for await (const chunk of provider.complete(request)) {
-    if (chunk.type === "text") text += chunk.text;
-    else if (chunk.type === "stop") stop = chunk.reason;
+    if (chunk.type === "text") reply.text += chunk.text;
+    else if (chunk.type === "stop") reply.stop = chunk.reason;
+    else if (chunk.type === "model") reply.servedModel = chunk.model;
+    else if (chunk.type === "usage") {
+      reply.inputTokens += chunk.usage.inputTokens;
+      reply.outputTokens += chunk.usage.outputTokens;
+      reply.thinkingTokens += chunk.usage.thinkingTokens ?? 0;
+    }
   }
-  return { text, stop };
+  return reply;
+}
+
+function planningMetrics(
+  opts: DecomposeOptions,
+  model: string,
+  usage: { inputTokens: number; outputTokens: number; thinkingTokens: number },
+  started: number,
+): TaskMetrics {
+  const ref = referenceCost(model, usage.inputTokens, usage.outputTokens);
+  return {
+    taskId: "plan",
+    model,
+    provider: opts.provider.name,
+    ...(opts.model.effort !== undefined ? { effort: opts.model.effort } : {}),
+    tier: "build",
+    ...usage,
+    referenceCost: ref,
+    billedCost: opts.provider.billing === "per-token" ? ref : 0,
+    durationMs: Date.now() - started,
+    success: true,
+    escalated: false,
+    ...(model !== opts.model.model ? { fallbackFrom: opts.model.model } : {}),
+  };
 }
 
 function repairPrompt(err: DecomposerError): string {
@@ -193,7 +237,7 @@ function repairPrompt(err: DecomposerError): string {
 Renvoie UNIQUEMENT l'objet JSON complet et valide, conforme au schéma demandé (3 à 8 tâches, ids existants dans dependsOn, pas de cycle), sans texte ni bloc de code autour.`;
 }
 
-function buildPipeline(opts: DecomposeOptions, plan: Plan): Pipeline {
+function buildPipeline(opts: DecomposeOptions, plan: Plan, planning: TaskMetrics): Pipeline {
   const tasks: Task[] = plan.tasks.map((t) => {
     const needs = [...new Set((t.needs ?? []).filter(isCapability))];
     return {
@@ -214,6 +258,7 @@ function buildPipeline(opts: DecomposeOptions, plan: Plan): Pipeline {
     context: opts.context,
     tasks,
     status: "pending",
+    planning,
     created: new Date(),
   };
 }

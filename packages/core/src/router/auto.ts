@@ -31,6 +31,10 @@ export interface AccountPolicy {
   levels?: RouteTier[];
   /** Nombre max d'appels par run (préserver un quota d'abonnement). */
   maxCallsPerRun?: number;
+  /** Modèles retirés du pool auto pour ce compte. */
+  disabledModels?: string[];
+  /** Modèles détectés ajoutés au pool auto (en plus de la sélection recommandée). */
+  extraModels?: string[];
 }
 
 export interface RouteCandidate {
@@ -51,6 +55,8 @@ export interface TaskRouting {
   onUse?(candidate: RouteCandidate): void;
   /** Résultat d'un appel : sans erreur ⇒ succès. */
   report?(candidate: RouteCandidate, error?: ProviderRequestError): void;
+  /** Coût réellement facturé d'un appel (suivi du budget). */
+  onCost?(candidate: RouteCandidate, billedCost: number): void;
 }
 
 const LEVEL: Record<RouteTier, number> = { quick: 0, build: 1, deep: 2 };
@@ -87,10 +93,13 @@ export interface AutoRouterOptions {
   strategy: Strategy;
   policies?: Record<string, AccountPolicy>;
   health?: HealthTracker;
+  /** Budget max facturé par run ($). Atteint ⇒ plus de comptes à l'usage (gratuit et abonnement restent). */
+  budget?: number;
 }
 
 export class AutoRouter {
   private readonly calls = new Map<string, number>();
+  private spent = 0;
 
   constructor(
     private readonly pool: PoolEntry[],
@@ -112,6 +121,8 @@ export class AutoRouter {
       if (policy !== undefined && !policy.enabled) continue;
       if (policy?.levels !== undefined && !policy.levels.includes(task.tier)) continue;
       if (policy?.maxCallsPerRun !== undefined && (this.calls.get(entry.provider) ?? 0) >= policy.maxCallsPerRun) continue;
+      if (policy?.disabledModels?.includes(entry.model) === true) continue;
+      if (entry.billing === "per-token" && this.opts.budget !== undefined && this.spent >= this.opts.budget) continue;
 
       const p = profileModel(entry.model);
       const level = LEVEL[p.level];
@@ -156,6 +167,15 @@ export class AutoRouter {
   consume(provider: string): void {
     this.calls.set(provider, (this.calls.get(provider) ?? 0) + 1);
   }
+
+  /** Ajoute un coût facturé au budget du run. */
+  spend(cost: number): void {
+    this.spent += cost;
+  }
+
+  get spentSoFar(): number {
+    return this.spent;
+  }
 }
 
 /** Routage automatique : pool multi-comptes, repli entre fournisseurs, santé partagée. */
@@ -168,6 +188,7 @@ export function autoRouting(
     candidates: (task) => router.rank(task),
     provider,
     onUse: (c) => router.consume(c.provider),
+    onCost: (_c, cost) => router.spend(cost),
     report: (c, error) =>
       error !== undefined ? health?.reportFailure(c.provider, c.model, error.kind) : health?.reportSuccess(c.provider, c.model),
   };

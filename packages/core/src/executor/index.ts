@@ -70,7 +70,23 @@ export interface ExecutorOptions {
   runTask?: RunTask;
   /** Interrompt le pipeline avant la tâche suivante. */
   signal?: AbortSignal;
+  /** Assemble un livrable final à partir de tous les résultats (étape de synthèse). */
+  synthesis?: boolean;
 }
+
+const SYNTHESIS_SYSTEM =
+  "Tu es le rédacteur final du pipeline Relay. Tu assembles les résultats des tâches en un livrable unique, cohérent et directement utilisable.";
+/** Part de chaque résultat transmise à la synthèse (caractères) : borne l'entrée. */
+const SYNTHESIS_INPUT_PER_TASK = 6_000;
+const SYNTHESIS_TASK: Task = {
+  id: "synthese",
+  type: "document",
+  description: "Synthèse finale",
+  tier: "build",
+  dependsOn: [],
+  status: "pending",
+  attempts: [],
+};
 
 export class ExecutorError extends Error {
   override readonly name = "ExecutorError";
@@ -224,6 +240,7 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
       task.status = "done";
       task.attempts.push({ model: servedModel, ...(c.effort !== undefined ? { effort: c.effort } : {}), success: true, metrics, result: result.text });
       taskMetrics.push(metrics);
+      routing.onCost?.(c, metrics.billedCost);
 
       yield log({
         level: truncated ? "warn" : "info",
@@ -239,11 +256,104 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
     }
   }
 
-  const metrics = computePipelineMetrics({ pipelineId: pipeline.id, taskMetrics, baselineModel });
+  const synthesis = opts.synthesis === true ? yield* synthesize(pipeline, routing) : undefined;
+  const overhead = [pipeline.planning, synthesis].filter((m): m is TaskMetrics => m !== undefined);
+  const metrics = computePipelineMetrics({ pipelineId: pipeline.id, taskMetrics, overhead, baselineModel });
   pipeline.metrics = metrics;
   pipeline.status = "done";
   pipeline.finished = new Date();
   yield { type: "pipeline:done", pipeline, metrics };
+}
+
+/**
+ * Synthèse : un modèle « build » assemble tous les résultats en un livrable unique.
+ * En cas d'échec, le pipeline reste réussi (les résultats des tâches sont là).
+ */
+async function* synthesize(pipeline: Pipeline, routing: TaskRouting): AsyncGenerator<PipelineEvent, TaskMetrics | undefined> {
+  const candidates = routing.candidates({ tier: "build" }).slice(0, 2);
+  const prompt = buildSynthesisPrompt(pipeline);
+
+  for (const [i, c] of candidates.entries()) {
+    const provider = routing.provider(c.provider);
+    routing.onUse?.(c);
+    yield log({ level: "info", category: "route", title: `Synthèse → ${c.provider} · ${c.model}`, detail: `Raison : ${c.reason}` });
+    yield log({ level: "info", category: "request", title: `Synthèse : requête → ${c.model}`, detail: prompt });
+    const started = Date.now();
+    try {
+      const r = await defaultRunTask({
+        task: SYNTHESIS_TASK,
+        request: {
+          model: c.model,
+          ...(c.effort !== undefined ? { effort: c.effort } : {}),
+          system: SYNTHESIS_SYSTEM,
+          messages: [{ role: "user", content: prompt }],
+          maxTokens: DEFAULT_WORKER_MAX_TOKENS,
+        },
+        provider,
+        onChunk: () => undefined,
+      });
+      routing.report?.(c);
+      const model = r.servedModel ?? c.model;
+      const ref = referenceCost(model, r.inputTokens, r.outputTokens);
+      const metrics: TaskMetrics = {
+        taskId: SYNTHESIS_TASK.id,
+        model,
+        provider: c.provider,
+        ...(c.effort !== undefined ? { effort: c.effort } : {}),
+        tier: "build",
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        thinkingTokens: r.thinkingTokens,
+        referenceCost: ref,
+        billedCost: provider.billing === "per-token" ? ref : 0,
+        durationMs: Date.now() - started,
+        success: true,
+        escalated: false,
+      };
+      routing.onCost?.(c, metrics.billedCost);
+      yield log({
+        level: r.stop === "length" ? "warn" : "info",
+        category: "response",
+        title: `Synthèse prête · ${r.outputTokens} tokens · ${(metrics.durationMs / 1000).toFixed(1)} s${r.stop === "length" ? " · TRONQUÉE" : ""}`,
+        detail: r.text,
+      });
+      yield { type: "pipeline:synthesis", text: r.text, provider: c.provider, model, metrics };
+      return metrics;
+    } catch (err) {
+      routing.report?.(c, err instanceof ProviderRequestError ? err : undefined);
+      const d = describeError(err);
+      const last = i === candidates.length - 1;
+      yield log({
+        level: last ? "error" : "warn",
+        category: last ? "error" : "fallback",
+        title: `Synthèse ${c.model} : ${d.title.toLowerCase()}${last ? " — résultats des tâches conservés" : " → modèle suivant"}`,
+        detail: d.detail,
+      });
+    }
+  }
+  return undefined;
+}
+
+function buildSynthesisPrompt(pipeline: Pipeline): string {
+  const results = pipeline.tasks
+    .map((t) => {
+      const raw = t.output?.data?.["result"];
+      const out = typeof raw === "string" ? raw : (t.output?.summary ?? "(pas de résultat)");
+      const clipped = out.length > SYNTHESIS_INPUT_PER_TASK ? `${out.slice(0, SYNTHESIS_INPUT_PER_TASK)}\n[…tronqué]` : out;
+      return `## [${t.id}] (${t.tier}/${t.type}) ${t.description}\n${clipped}`;
+    })
+    .join("\n\n");
+
+  return `# Demande originale
+${pipeline.prompt}
+
+# Résultats des tâches
+${results}
+
+# Consignes
+- Produis le livrable final complet et directement utilisable : le contenu final de chaque fichier dans un bloc de code précédé de son nom, puis comment l'utiliser et le tester.
+- Résous les incohérences entre tâches (noms, signatures, formats) en faveur d'une version qui fonctionne.
+- Ne raconte pas les étapes : donne le résultat.`;
 }
 
 function resolveRouting(opts: ExecutorOptions): TaskRouting {

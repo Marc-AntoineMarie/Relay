@@ -1,50 +1,44 @@
 /**
  * Calcul des métriques de pipeline (v0.1 : en mémoire ; SQLite en v0.2).
  *
- * Note baseline : `baselineCost` est ici « tout sur le modèle `deep` ». C'est la
- * définition des types, mais elle gonfle les économies (voir le commentaire de
- * PipelineMetrics). La baseline honnête — un seul appel `deep` sur le prompt entier —
- * sera ajoutée quand on branchera l'exécution réelle.
+ * Honnêteté : les coûts d'orchestration (planification, synthèse) sont inclus dans les
+ * totaux et dans la baseline, mais pas dans le décompte des tâches.
+ *
+ * Baseline : « chaque appel au tarif du modèle `deep` » — comparable à totalReferenceCost.
  */
-import { defaultRegistry, ModelRegistry } from "../registry.js";
+import { referenceCost } from "../catalog.js";
 import type { PipelineMetrics, TaskMetrics } from "../types.js";
 
 export interface PipelineMetricsInput {
   pipelineId: string;
   taskMetrics: TaskMetrics[];
+  /** Appels hors tâches (plan, synthèse). */
+  overhead?: TaskMetrics[];
   /** Modèle de référence pour la baseline (en général la route `deep`). */
   baselineModel: string;
-  registry?: ModelRegistry;
 }
 
 export function computePipelineMetrics(input: PipelineMetricsInput): PipelineMetrics {
-  const registry = input.registry ?? defaultRegistry;
   const { taskMetrics } = input;
+  const overhead = input.overhead ?? [];
+  const all = [...taskMetrics, ...overhead];
 
-  const totalBilledCost = sum(taskMetrics.map((m) => m.billedCost));
-  const totalReferenceCost = sum(taskMetrics.map((m) => m.referenceCost));
-  const totalTokens = sum(taskMetrics.map((m) => m.inputTokens + m.outputTokens));
-  const totalDurationMs = sum(taskMetrics.map((m) => m.durationMs));
-  const successCount = taskMetrics.filter((m) => m.success).length;
-  const escalationCount = taskMetrics.filter((m) => m.escalated).length;
-
-  // Baseline : tout au tarif de référence du modèle `deep`. Comparable à totalReferenceCost.
-  const baselineCost = sum(
-    taskMetrics.map((m) => registry.estimateCost(input.baselineModel, m.inputTokens, m.outputTokens)),
-  );
-  const savings = baselineCost > 0 ? ((baselineCost - totalReferenceCost) / baselineCost) * 100 : 0;
+  const totalBilledCost = sum(all.map((m) => m.billedCost));
+  const totalReferenceCost = sum(all.map((m) => m.referenceCost));
+  const baselineCost = sum(all.map((m) => referenceCost(input.baselineModel, m.inputTokens, m.outputTokens)));
 
   return {
     pipelineId: input.pipelineId,
     totalBilledCost,
     totalReferenceCost,
-    totalTokens,
-    totalDurationMs,
+    totalTokens: sum(all.map((m) => m.inputTokens + m.outputTokens)),
+    totalDurationMs: sum(all.map((m) => m.durationMs)),
     taskCount: taskMetrics.length,
-    successCount,
-    escalationCount,
+    successCount: taskMetrics.filter((m) => m.success).length,
+    escalationCount: taskMetrics.filter((m) => m.escalated).length,
     baselineCost,
-    savings,
+    savings: baselineCost > 0 ? ((baselineCost - totalReferenceCost) / baselineCost) * 100 : 0,
+    overheadReferenceCost: sum(overhead.map((m) => m.referenceCost)),
     costPerTask: taskMetrics,
   };
 }

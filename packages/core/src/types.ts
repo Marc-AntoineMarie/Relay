@@ -97,6 +97,8 @@ export interface Pipeline {
   tasks: Task[];
   status: PipelineStatus;
   metrics?: PipelineMetrics;
+  /** Coût de la planification (comptée dans les totaux, à part des tâches). */
+  planning?: TaskMetrics;
   created: Date;
   finished?: Date;
 }
@@ -249,6 +251,8 @@ export type PipelineEvent =
       to: ModelAssignment;
       reason: string;
     }
+  /** Livrable final assemblé à partir des résultats de toutes les tâches. */
+  | { type: "pipeline:synthesis"; text: string; provider: string; model: string; metrics: TaskMetrics }
   | { type: "pipeline:done"; pipeline: Pipeline; metrics: PipelineMetrics }
   | { type: "pipeline:failed"; pipeline: Pipeline; error: string; description?: ErrorDescription };
 
@@ -318,5 +322,7 @@ export interface PipelineMetrics {
   baselineCost: number;
   /** Économie de routage en % : (baselineCost − totalReferenceCost) / baselineCost. */
   savings: number;
+  /** Part « orchestration » (plan + synthèse) incluse dans totalReferenceCost. */
+  overheadReferenceCost: number;
   costPerTask: TaskMetrics[];
 }
