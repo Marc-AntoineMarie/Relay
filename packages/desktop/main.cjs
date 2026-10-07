@@ -14,7 +14,9 @@ let started;
 async function createWindow() {
   // @relay/server est en ESM → import dynamique depuis ce fichier CJS.
   const { startServer } = await import("@relay/server");
-  started = await startServer({ port: 0 }); // 0 → port libre choisi par l'OS
+  // Port fixe (origine stable → préférences mémorisées entre deux lancements),
+  // port libre choisi par l'OS s'il est déjà pris.
+  started = await startServer({ port: 47474 }).catch(() => startServer({ port: 0 }));
 
   const win = new BrowserWindow({
     width: 1280,

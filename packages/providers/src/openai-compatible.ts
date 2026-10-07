@@ -77,7 +77,8 @@ export class OpenAICompatibleProvider implements Provider {
       baseURL: options.baseURL,
       apiKey: options.apiKey ?? "not-needed",
       timeout: options.timeoutMs ?? 60_000,
-      maxRetries: options.maxRetries ?? 1,
+      // Avec des replis, on bascule tout de suite plutôt que de réessayer un modèle saturé.
+      maxRetries: options.maxRetries ?? (this.fallbackModels.length > 0 ? 0 : 1),
       ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
     });
   }

@@ -8,6 +8,32 @@ en même temps que le commit correspondant (un bloc par commit, le plus récent 
 
 ## [Non publié] — v0.1.0 en cours (+ début dashboard v0.3)
 
+### 2026-10-07 — fiabilisation : modèles, erreurs, front
+
+Premier pipeline réel de bout en bout validé (Gemini gratuit : 4/4 tâches, $0, repli
+automatique sur modèle saturé).
+
+- **Décomposeur robuste** : extraction JSON tolérante (blocs ```json, texte autour),
+  troncature détectée (`stop: length`) → budget de tokens doublé, JSON/plan invalide →
+  relance de réparation avec l'erreur (3 tentatives), ids numériques acceptés.
+- **Erreurs normalisées** (`core/errors.ts`) : `ProviderRequestError` (auth, modèle retiré,
+  quota, saturé, timeout, requête refusée, réseau) + `describeError` (titre, détail,
+  conseil en français). Utilisées par les providers, le serveur, le CLI et l'UI.
+- **Gestion des modèles** : un modèle par tier pour chaque backend (alias « latest » pour
+  Gemini, jamais dépréciés), repli automatique si saturé/retiré (sans retenter le modèle
+  saturé), modèle réellement servi tracé dans les métriques, effort → `reasoning_effort`
+  (budget de réflexion), filtrage des modèles non-chat (voix, image, embeddings),
+  suggestion par tier validée contre les modèles détectés.
+- **Serveur** : routage par tier appliqué à la config, `/api/models` filtré + suggéré,
+  erreurs décrites, arrêt du pipeline quand le client coupe.
+- **Front** : sélecteur de modèle par tier (Quick / Build / Deep) avec badge
+  « recommandé », carte d'erreur (titre, détail, conseil, Réessayer / modèles
+  recommandés), étapes + chrono pendant l'exécution, bouton Arrêter, métriques toujours
+  visibles, panneau de détail par tâche (modèle servi, repli, coût, tokens, sortie),
+  préférences mémorisées (backend, modèles), Ctrl+Entrée pour lancer.
+- **Desktop** : port fixe 47474 (repli sur port libre) pour garder les préférences.
+- **Tests** : 67 (robustesse décomposeur, erreurs, filtrage/suggestion, repli simulé).
+
 ### (ce commit) — feat: app desktop Electron (v0.4 avancée)
 
 - **`packages/desktop`** : app Electron. Le processus principal démarre le moteur
