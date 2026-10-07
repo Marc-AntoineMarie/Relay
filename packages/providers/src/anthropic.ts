@@ -9,8 +9,8 @@
  *     structured outputs, hors de cet adaptateur).
  */
 import Anthropic from "@anthropic-ai/sdk";
-import { defaultRegistry, ModelRegistry } from "@relay/core";
-import type { CompletionChunk, CompletionRequest, ModelInfo, Provider } from "@relay/core";
+import { defaultRegistry, kindFromStatus, ModelRegistry, ProviderRequestError } from "@relay/core";
+import type { CompletionChunk, CompletionRequest, ModelInfo, Provider, StopReason } from "@relay/core";
 
 /** max_tokens par défaut (streaming) quand la requête n'en précise pas. */
 const DEFAULT_MAX_TOKENS = 16_000;
@@ -94,15 +94,18 @@ export class AnthropicProvider implements Provider {
       params.output_config = outputConfig;
     }
 
-    const stream = this.client.messages.stream(params);
-
-    for await (const event of stream) {
-      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-        yield { type: "text", text: event.delta.text };
+    let final: Anthropic.Message;
+    try {
+      const stream = this.client.messages.stream(params);
+      for await (const event of stream) {
+        if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+          yield { type: "text", text: event.delta.text };
+        }
       }
+      final = await stream.finalMessage();
+    } catch (err) {
+      throw toAnthropicError(err, request.model);
     }
-
-    const final = await stream.finalMessage();
 
     for (const block of final.content) {
       if (block.type === "tool_use") {
@@ -118,7 +121,29 @@ export class AnthropicProvider implements Provider {
         thinkingTokens: final.usage.output_tokens_details?.thinking_tokens ?? 0,
       },
     };
+    yield { type: "stop", reason: STOP_REASONS[final.stop_reason ?? ""] ?? "other" };
   }
+}
+
+const STOP_REASONS: Record<string, StopReason> = {
+  end_turn: "end",
+  stop_sequence: "end",
+  max_tokens: "length",
+  refusal: "refusal",
+  tool_use: "tool_use",
+};
+
+function toAnthropicError(err: unknown, model: string): ProviderRequestError {
+  if (err instanceof Anthropic.APIConnectionTimeoutError) {
+    return new ProviderRequestError("timeout", "délai de réponse dépassé", "anthropic", model);
+  }
+  if (err instanceof Anthropic.APIConnectionError) {
+    return new ProviderRequestError("network", err.message, "anthropic", model);
+  }
+  if (err instanceof Anthropic.APIError) {
+    return new ProviderRequestError(kindFromStatus(err.status), err.message, "anthropic", model, err.status);
+  }
+  return new ProviderRequestError("unknown", err instanceof Error ? err.message : String(err), "anthropic", model);
 }
 
 /**

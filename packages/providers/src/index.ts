@@ -14,7 +14,14 @@ export type {
   ClaudePermissionMode,
   InterpretedChunk,
 } from "./claude-code.js";
-export { OpenAICompatibleProvider, buildChatParams } from "./openai-compatible.js";
+export { OpenAICompatibleProvider, buildChatParams, toProviderError } from "./openai-compatible.js";
 export type { OpenAICompatibleOptions, StructuredMode } from "./openai-compatible.js";
-export { createProvider, providerReadiness, ProviderError, PROVIDER_PRESETS } from "./factory.js";
+export {
+  createProvider,
+  filterChatModels,
+  providerReadiness,
+  ProviderError,
+  PROVIDER_PRESETS,
+  suggestTierModels,
+} from "./factory.js";
 export type { ProviderPreset, CreateProviderOptions, ProviderReadiness } from "./factory.js";
