@@ -13,6 +13,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, normalize, extname } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   decompose,
   defaultRegistry,
@@ -217,34 +218,60 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
   })();
 }
 
-export function startServer(): void {
+export interface StartedServer {
+  port: number;
+  close: () => Promise<void>;
+}
+
+/**
+ * Démarre le serveur et résout avec le port réel. Sans host → écoute en IPv4 et IPv6
+ * (localhost fonctionne dans les deux cas). `port: 0` ⇒ port libre choisi par l'OS.
+ */
+export function startServer(options: { port?: number } = {}): Promise<StartedServer> {
   loadEnv();
   const server = createServer(handler);
-
-  server.on("error", (err: NodeJS.ErrnoException) => {
-    if (err.code === "EADDRINUSE") {
-      console.error(`[relay] le port ${PORT} est déjà utilisé.`);
-      console.error(`→ ferme l'autre serveur, ou lance avec un autre port : RELAY_PORT=5180 pnpm server`);
-    } else {
-      console.error(`[relay] erreur serveur : ${err.message}`);
-    }
-    process.exit(1);
+  const port = options.port ?? PORT;
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, () => {
+      server.off("error", reject);
+      const addr = server.address();
+      const actualPort = typeof addr === "object" && addr !== null ? addr.port : port;
+      resolve({
+        port: actualPort,
+        close: () => new Promise<void>((res) => server.close(() => res())),
+      });
+    });
   });
+}
 
-  // Sans host → écoute en IPv4 et IPv6 (localhost fonctionne dans les deux cas).
-  server.listen(PORT, () => {
-    console.log(`\n✅ Relay — dashboard prêt :`);
-    console.log(`   →  http://localhost:${PORT}`);
-    console.log(`   →  http://127.0.0.1:${PORT}\n`);
-    if (!existsSync(join(WEB_DIST, "index.html"))) {
-      console.log("ℹ UI non buildée : 'pnpm web:build' (ou 'pnpm web:dev' pour le mode dev).\n");
-    }
-    console.log("Laisse ce terminal ouvert (le serveur tourne ici). Ctrl+C pour arrêter.");
-  });
+/** Lancement en ligne de commande : logs lisibles + gestion d'erreur. */
+function runCli(): void {
+  startServer()
+    .then(({ port }) => {
+      console.log(`\n✅ Relay — dashboard prêt :`);
+      console.log(`   →  http://localhost:${port}`);
+      console.log(`   →  http://127.0.0.1:${port}\n`);
+      if (!existsSync(join(WEB_DIST, "index.html"))) {
+        console.log("ℹ UI non buildée : 'pnpm web:build' (ou 'pnpm web:dev' pour le mode dev).\n");
+      }
+      console.log("Laisse ce terminal ouvert (le serveur tourne ici). Ctrl+C pour arrêter.");
+    })
+    .catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        console.error(`[relay] le port ${PORT} est déjà utilisé.`);
+        console.error(`→ ferme l'autre serveur, ou lance avec un autre port : RELAY_PORT=5180 pnpm server`);
+      } else {
+        console.error(`[relay] erreur serveur : ${err.message}`);
+      }
+      process.exit(1);
+    });
 }
 
 process.on("uncaughtException", (err) => {
   console.error(`[relay] exception non gérée : ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
 });
 
-startServer();
+// Auto-démarrage seulement si exécuté directement (pas lors d'un import depuis Electron).
+const entry = process.argv[1] !== undefined ? pathToFileURL(process.argv[1]).href : "";
+if (import.meta.url === entry) runCli();

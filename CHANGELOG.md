@@ -8,7 +8,20 @@ en même temps que le commit correspondant (un bloc par commit, le plus récent 
 
 ## [Non publié] — v0.1.0 en cours (+ début dashboard v0.3)
 
-### (ce commit) — fix: serveur accessible en IPv4 **et** IPv6 (localhost)
+### (ce commit) — feat: app desktop Electron (v0.4 avancée)
+
+- **`packages/desktop`** : app Electron. Le processus principal démarre le moteur
+  (serveur local **en interne**, sur un port libre) et ouvre une fenêtre dessus →
+  **aucune config réseau** (plus de port, plus de souci localhost/IPv6, plus de serveur
+  à lancer à part). Liens externes ouverts dans le navigateur système, rendu logiciel
+  pour éviter les crashs GPU.
+- **`@relay/server`** : `startServer({ port })` renvoie le port réel + un `close()` ;
+  auto-démarrage seulement en CLI (pas à l'import). Ajout de `main`/`exports`.
+- **Script racine** : `pnpm desktop` (build + lance la fenêtre).
+- **`pnpm.onlyBuiltDependencies`** : autorise le postinstall d'Electron/esbuild (sinon le
+  binaire Electron ne s'installe pas).
+
+### fix: serveur accessible en IPv4 **et** IPv6 (localhost)
 
 - Le serveur écoutait seulement en IPv4 (`127.0.0.1`) → `localhost` résolu en `::1`
   donnait « site inaccessible ». Désormais écoute dual-stack.

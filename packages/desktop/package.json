@@ -1,0 +1,15 @@
+{
+  "name": "@relay/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron . --no-sandbox"
+  },
+  "dependencies": {
+    "@relay/server": "workspace:*"
+  },
+  "devDependencies": {
+    "electron": "^44.6.0"
+  }
+}
