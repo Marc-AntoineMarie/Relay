@@ -12,6 +12,8 @@ import type {
   CommandResult,
   FixRequest,
   LaunchState,
+  ConversationMessage,
+  ProjectInfo,
   RunDir,
   WorkspaceFile,
 } from "./types";
@@ -101,6 +103,33 @@ export const getLaunches = (root: string): Promise<{ launches: LaunchState[] }> 
 
 export const stopLaunch = (id: string): Promise<{ found: boolean }> => call("/api/workspace/stop", post({ id }));
 
+export const getProjects = (): Promise<{ base: string; projects: ProjectInfo[] }> => call("/api/projects");
+
+export const getProject = (root: string): Promise<{ root: string; name: string; messages: ConversationMessage[]; memory: string }> =>
+  call(`/api/projects/detail?root=${encodeURIComponent(root)}`);
+
+export const saveProjectMemory = (root: string, content: string): Promise<{ ok: boolean }> =>
+  call("/api/projects/memory", { ...post({ root, content }), method: "PUT" });
+
+export const importProject = (root: string): Promise<{ root: string; name: string }> => call("/api/projects/import", post({ root }));
+
+/** URL d'aperçu d'un fichier de projet : le dossier est encodé (base64url) pour accepter tout emplacement. */
+export function previewUrl(root: string, path: string, nonce: number): string {
+  const bytes = new TextEncoder().encode(root);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  const id = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return `/ws/${id}/${path.split("/").map(encodeURIComponent).join("/")}?v=${nonce}`;
+}
+
+/** Sélecteur de dossier natif (app desktop) ; null dans un navigateur ou si annulé. */
+export async function pickFolder(title: string): Promise<string | null> {
+  const desktop = (window as unknown as { relayDesktop?: { pickFolder: (t: string) => Promise<string | null> } }).relayDesktop;
+  return desktop !== undefined ? desktop.pickFolder(title) : null;
+}
+
+export const hasNativePicker = (): boolean => (window as unknown as { relayDesktop?: unknown }).relayDesktop !== undefined;
+
 export const answerApproval = (key: string, ok: boolean): Promise<{ found: boolean }> =>
   call("/api/approve", post({ key, ok }));
 
@@ -112,6 +141,10 @@ export type RunBody = (
   workspace?: string;
   /** Corriger une erreur rencontrée en testant. */
   fix?: FixRequest;
+  /** Nouveau projet : nom et emplacement (facultatifs). */
+  project?: { name?: string; location?: string };
+  /** Réponses aux questions de cadrage. */
+  kind?: "prompt" | "answer";
 };
 
 export async function getPool(): Promise<PoolResponse | null> {

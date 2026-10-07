@@ -12,7 +12,7 @@ const SECTIONS: Array<{ id: SettingsSection; label: string; hint: string }> = [
   { id: "accounts", label: "Comptes et clés", hint: "connecter, tester, supprimer" },
   { id: "models", label: "Modèles", hint: "catalogue et pool automatique" },
   { id: "routing", label: "Routage", hint: "stratégie, plafonds, budget" },
-  { id: "general", label: "Général", hint: "actions des agents, dossier, disposition" },
+  { id: "general", label: "Général", hint: "agents, mémoire, questions, disposition" },
 ];
 
 export function SettingsView({ onResetLayout }: { onResetLayout: () => void }): React.JSX.Element | null {
@@ -387,6 +387,21 @@ const POLICY_HINT: Record<CommandPolicy, string> = {
   auto: "Tout est lancé, sauf les commandes destructrices évidentes (sudo, rm -rf /, git push…). À réserver aux comptes et projets de confiance.",
 };
 
+function GlobalMemory(): React.JSX.Element {
+  const r = useRelay();
+  const [text, setText] = useState(r.settings.globalMemory);
+  useEffect(() => setText(r.settings.globalMemory), [r.settings.globalMemory]);
+  return (
+    <textarea
+      className="global-memory"
+      value={text}
+      placeholder={"ex. Réponds en français. Je préfère Python et des pages web simples. Pas de dépendances à installer."}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={() => text !== r.settings.globalMemory && r.updateSettings({ globalMemory: text })}
+    />
+  );
+}
+
 function GeneralSection({ onResetLayout }: { onResetLayout: () => void }): React.JSX.Element {
   const r = useRelay();
   const s = r.settings;
@@ -432,6 +447,45 @@ function GeneralSection({ onResetLayout }: { onResetLayout: () => void }): React
           </p>
         </div>
         <Segmented value={s.commandPolicy} disabled={r.busy} onChange={(v) => r.updateSettings({ commandPolicy: v })} options={POLICY_OPTIONS} />
+      </div>
+
+      <h4>Conversation et mémoire</h4>
+      <div className="setting-row">
+        <div>
+          <strong>Questions de cadrage</strong>
+          <p className="muted small">
+            Si ta demande est trop floue pour un plan fiable, le planificateur te pose 1 à 3 questions (réponses proposées,
+            ou « Décide pour moi ») avant de lancer les modèles. Désactivé : il planifie avec des hypothèses, affichées
+            dans le résultat.
+          </p>
+        </div>
+        <label className="switch">
+          <input type="checkbox" checked={s.askQuestions} onChange={(e) => r.updateSettings({ askQuestions: e.target.checked })} />
+          <span>{s.askQuestions ? "activées" : "désactivées"}</span>
+        </label>
+      </div>
+      <div className="setting-row">
+        <div>
+          <strong>Mémoire du projet (RELAY.md)</strong>
+          <p className="muted small">
+            Après chaque tour, un petit modèle réécrit RELAY.md à la racine du projet : objectif, structure, commandes,
+            décisions, historique. Il est relu à chaque tour. Coût : un appel court par tour (souvent gratuit).
+          </p>
+        </div>
+        <label className="switch">
+          <input type="checkbox" checked={s.projectMemory} onChange={(e) => r.updateSettings({ projectMemory: e.target.checked })} />
+          <span>{s.projectMemory ? "tenue à jour" : "manuelle"}</span>
+        </label>
+      </div>
+      <div className="setting-row setting-col">
+        <div>
+          <strong>Mémoire globale (tes préférences)</strong>
+          <p className="muted small">
+            Transmise à tous les projets, comme le CLAUDE.md global de Claude Code : langue, technos préférées, style,
+            contraintes de ta machine…
+          </p>
+        </div>
+        <GlobalMemory />
       </div>
 
       <h4>Interface</h4>

@@ -5,7 +5,7 @@
  * - Validations : en mode Prudent, chaque commande d'agent attend ton accord.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { readFile } from "./api";
+import { previewUrl, readFile } from "./api";
 import { useRelay } from "./store";
 import type { CommandView, FixRequest, WorkspaceFile } from "./types";
 
@@ -46,9 +46,9 @@ export function FilesPanel(): React.JSX.Element {
   }, [r.workspace, selected, r.lastWrite?.path === selected ? r.lastWrite?.at : 0]);
 
   const options = useMemo(() => {
-    const roots = r.runs.map((x) => x.root);
+    const roots = r.projects.map((x) => x.root);
     return r.workspace !== null && !roots.includes(r.workspace) ? [r.workspace, ...roots] : roots;
-  }, [r.runs, r.workspace]);
+  }, [r.projects, r.workspace]);
 
   if (r.workspace === null) {
     return (
@@ -393,8 +393,7 @@ export function PreviewPanel(): React.JSX.Element {
   const frame = useRef<HTMLIFrameElement>(null);
   const [errors, setErrors] = useState<string[]>([]);
   const p = r.preview;
-  const run = r.workspace !== null ? runLabel(r.workspace) : null;
-  const src = p !== null && run !== null ? `/ws/${encodeURIComponent(run)}/${p.path.split("/").map(encodeURIComponent).join("/")}?v=${p.nonce}` : null;
+  const src = p !== null && r.workspace !== null ? previewUrl(r.workspace, p.path, p.nonce) : null;
   const pages = r.files.filter((f) => /\.html?$/i.test(f.path));
 
   useEffect(() => setErrors([]), [src]);

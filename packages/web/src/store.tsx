@@ -14,13 +14,16 @@ import {
   getPool,
   getSettings,
   getLaunches,
+  getProject,
+  getProjects,
   getState,
+  importProject,
   launchInWorkspace,
   listFiles,
-  listRuns,
   openWorkspace,
   runInWorkspace,
   runPipeline,
+  saveProjectMemory,
   saveSettings,
   setKey,
   stopLaunch,
@@ -32,8 +35,9 @@ import {
   type AccountPolicy,
   type ApprovalRequest,
   type CommandView,
+  type ConversationMessage,
   type FixRequest,
-  type RunDir,
+  type ProjectInfo,
   type WorkspaceFile,
   type AppState,
   type ErrorDescription,
@@ -103,6 +107,9 @@ const DEFAULT_SETTINGS: Settings = {
   agentic: true,
   workspaceRoot: "",
   commandPolicy: "safe",
+  askQuestions: true,
+  globalMemory: "",
+  projectMemory: true,
 };
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -145,11 +152,15 @@ function useRelayState() {
   const [lastWrite, setLastWrite] = useState<{ path: string; at: number } | null>(null);
   const [commands, setCommands] = useState<CommandView[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
-  const [runs, setRuns] = useState<RunDir[]>([]);
+  // Phase E : projets (historique), conversation et mémoire du projet ouvert.
+  const [projects, setProjects] = useState<ProjectInfo[]>([]);
+  const [projectName, setProjectName] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [memory, setMemory] = useState("");
+  // Nouveau projet : nom (proposé d'après la demande tant qu'il n'est pas modifié) et emplacement.
+  const [draft, setDraft] = useState<{ name: string; edited: boolean; location: string }>({ name: "", edited: false, location: "" });
   const abortRef = useRef<AbortController | null>(null);
   const userSeq = useRef(0);
-  // Session : la prochaine demande continue dans le dossier courant (contexte transmis aux modèles).
-  const [continueSession, setContinueSession] = useState(true);
   const [round, setRound] = useState(1);
   // Aperçu d'une page du dossier (iframe isolée) ; `nonce` force le rechargement.
   const [preview, setPreview] = useState<{ path: string; nonce: number } | null>(null);
@@ -178,14 +189,20 @@ function useRelayState() {
           setProvider((p) => p || pickProvider(s.providers, s.defaultProvider));
           const loaded = await getSettings();
           if (!cancelled && loaded !== null) setSettings(loaded);
-          // Au démarrage, les Fichiers montrent le dernier run.
-          const previous = await listRuns().catch(() => null);
-          if (!cancelled && previous !== null) {
-            setRuns(previous.runs);
-            const last = previous.runs[0];
+          // Au démarrage : l'historique des projets, et le dernier projet rouvert.
+          const list = await getProjects().catch(() => null);
+          if (!cancelled && list !== null) {
+            setProjects(list.projects);
+            const last = list.projects[0];
             if (last !== undefined) {
-              setWorkspace((w) => w ?? last.root);
-              void listFiles(last.root).then((r) => !cancelled && setFiles((f) => (f.length === 0 ? r.files : f)), () => undefined);
+              const d = await getProject(last.root).catch(() => null);
+              if (!cancelled && d !== null) {
+                setWorkspace((w) => w ?? d.root);
+                setProjectName((n) => n ?? d.name);
+                setMessages((m) => (m.length === 0 ? d.messages : m));
+                setMemory(d.memory);
+                void listFiles(d.root).then((r) => !cancelled && setFiles((f) => (f.length === 0 ? r.files : f)), () => undefined);
+              }
             }
           }
         })
@@ -332,20 +349,83 @@ function useRelayState() {
     }
   }
 
-  async function refreshRuns(): Promise<void> {
+  async function refreshProjects(): Promise<void> {
     try {
-      setRuns((await listRuns()).runs);
+      setProjects((await getProjects()).projects);
     } catch {
-      /* moteur injoignable : la liste reste vide */
+      /* moteur injoignable : la liste reste telle quelle */
     }
   }
 
-  /** Rouvre le dossier d'un run précédent. */
-  function selectWorkspace(root: string): void {
-    if (busy) return;
-    setWorkspace(root);
+  /** Vue du run (graphe, journal, commandes…) remise à zéro : changement de projet. */
+  function resetRunView(): void {
+    setViews([]);
+    setLogs([]);
+    setSelectedId(null);
     setCommands([]);
-    void refreshFiles(root);
+    setPreview(null);
+    setSynthesis(null);
+    setMetrics(null);
+    setError(null);
+    setPhase("idle");
+    setStartedAt(null);
+    raised.current.clear();
+  }
+
+  /** Rouvre un projet de l'historique : sa conversation, sa mémoire, ses fichiers. */
+  async function loadProject(root: string): Promise<void> {
+    if (busy) return;
+    try {
+      const d = await getProject(root);
+      resetRunView();
+      setWorkspace(d.root);
+      setProjectName(d.name);
+      setMessages(d.messages);
+      setMemory(d.memory);
+      setRound(1);
+      void refreshFiles(d.root);
+    } catch (e: unknown) {
+      setError({ kind: "config", title: "Projet illisible", detail: errorText(e) });
+    }
+  }
+
+  /** Recharge conversation et mémoire (fin de run) sans toucher à la vue du run. */
+  async function reloadProject(root: string): Promise<void> {
+    const d = await getProject(root).catch(() => null);
+    if (d === null) return;
+    setMessages(d.messages);
+    setMemory(d.memory);
+  }
+
+  function newProject(): void {
+    if (busy) return;
+    resetRunView();
+    setWorkspace(null);
+    setProjectName(null);
+    setMessages([]);
+    setMemory("");
+    setFiles([]);
+    setDraft({ name: "", edited: false, location: "" });
+  }
+
+  async function importFolder(path: string): Promise<void> {
+    try {
+      const p = await importProject(path);
+      await refreshProjects();
+      await loadProject(p.root);
+    } catch (e: unknown) {
+      setError({ kind: "config", title: "Import impossible", detail: errorText(e) });
+    }
+  }
+
+  async function saveMemory(text: string): Promise<void> {
+    if (workspace === null) return;
+    try {
+      await saveProjectMemory(workspace, text);
+      setMemory(text);
+    } catch (e: unknown) {
+      setError({ kind: "config", title: "Mémoire non enregistrée", detail: errorText(e) });
+    }
   }
 
   const upsertCommand = (id: string, update: Partial<CommandView> & Pick<CommandView, "command" | "by">): void =>
@@ -487,12 +567,20 @@ function useRelayState() {
   const pushLog = (entry: LogEntry): void =>
     setLogs((ls) => (ls.length >= MAX_LOGS ? [...ls.slice(-MAX_LOGS + 1), entry] : [...ls, entry]));
 
-  async function run(opts: { fix?: FixRequest } = {}): Promise<void> {
+  async function run(opts: { fix?: FixRequest; text?: string; kind?: "prompt" | "answer" } = {}): Promise<void> {
     const fix = opts.fix;
-    // Suite (ou correction) : même dossier, même graphe, même journal ; sinon nouveau projet.
-    const continuing = workspace !== null && cfg.agentic && (fix !== undefined || continueSession);
-    const text = fix !== undefined ? `Corriger l'erreur rencontrée en testant ${fix.source}` : prompt;
-    const session = continuing && workspace !== null ? { workspace, ...(fix !== undefined ? { fix } : {}) } : {};
+    // Projet ouvert : la conversation continue (même dossier, graphe, journal) ; sinon nouveau projet.
+    const continuing = workspace !== null && cfg.agentic;
+    const text = fix !== undefined ? `Corriger l'erreur rencontrée en testant ${fix.source}` : (opts.text ?? prompt).trim();
+    if (text.length === 0) return;
+    const project = {
+      ...(draft.edited && draft.name.trim() ? { name: draft.name.trim() } : {}),
+      ...(draft.location.trim() ? { location: draft.location.trim() } : {}),
+    };
+    const session =
+      continuing && workspace !== null
+        ? { workspace, ...(fix !== undefined ? { fix } : {}), ...(opts.kind !== undefined ? { kind: opts.kind } : {}) }
+        : { project, ...(opts.kind !== undefined ? { kind: opts.kind } : {}) };
     let body: RunBody;
     if (cfg.mode === "auto") {
       body = { mode: "auto", prompt: text, strategy: cfg.strategy, policies: cfg.policies, ...session };
@@ -508,6 +596,19 @@ function useRelayState() {
     setRunInfo(null);
     setStartedAt(Date.now());
     setApprovals([]);
+    // Le message part tout de suite dans la conversation (la version du moteur le remplace à la fin).
+    setMessages((ms) => [
+      ...(continuing ? ms : []),
+      {
+        id: `local-${Date.now()}`,
+        at: new Date().toISOString(),
+        role: "user",
+        kind: fix !== undefined ? "fix" : (opts.kind ?? "prompt"),
+        text: fix !== undefined ? fix.note?.trim() || `Corriger l'erreur de ${fix.source}` : text,
+        ...(fix !== undefined ? { error: fix.output } : {}),
+      },
+    ]);
+    if (fix === undefined && opts.text === undefined) setPrompt("");
     const prevSinks = continuing ? sinks(viewsRef.current) : [];
     if (continuing) {
       if (fix === undefined) setSynthesis(null);
@@ -591,6 +692,13 @@ function useRelayState() {
             runRoot = ev.root;
             setRound(ev.round ?? 1);
             setWorkspace(ev.root);
+            setProjectName(ev.name ?? ev.root.split(/[\\/]/).filter(Boolean).at(-1) ?? ev.root);
+            break;
+          case "questions":
+            setMessages((ms) => [
+              ...ms,
+              { id: `local-q-${Date.now()}`, at: new Date().toISOString(), role: "relay", kind: "questions", text: ev.analysis, questions: ev.questions },
+            ]);
             break;
           case "file:write":
             setFiles((fs) =>
@@ -655,9 +763,11 @@ function useRelayState() {
     } finally {
       abortRef.current = null;
       setApprovals([]);
-      void refreshRuns();
-      if (runRoot !== null) void refreshFiles(runRoot); // fichiers créés par les commandes aussi
-      setContinueSession(true); // la prochaine demande continue dans ce dossier
+      void refreshProjects();
+      if (runRoot !== null) {
+        void refreshFiles(runRoot); // fichiers créés par les commandes aussi (et RELAY.md)
+        void reloadProject(runRoot); // conversation et mémoire, version du moteur
+      }
       setNow(Date.now()); // fige le chrono sur la durée réelle
       setPhase((p) => (p === "planning" || p === "running" ? "done" : p));
     }
@@ -727,16 +837,22 @@ function useRelayState() {
     lastWrite,
     commands,
     approvals,
-    runs,
     refreshFiles: () => void refreshFiles(),
-    refreshRuns: () => void refreshRuns(),
-    selectWorkspace: (root: string) => {
-      selectWorkspace(root);
-      setContinueSession(true);
-      setRound(1);
-    },
-    continuing: workspace !== null && cfg.agentic && continueSession,
-    setContinueSession,
+    refreshRuns: () => void refreshProjects(),
+    selectWorkspace: (root: string) => void loadProject(root),
+    continuing: workspace !== null && cfg.agentic,
+    projects,
+    projectName,
+    messages,
+    memory,
+    draft,
+    setDraft,
+    loadProject: (root: string) => void loadProject(root),
+    newProject,
+    importFolder: (path: string) => void importFolder(path),
+    saveMemory,
+    refreshProjects: () => void refreshProjects(),
+    answer: (text: string) => void run({ text, kind: "answer" }),
     round,
     raiseError,
     fixError,

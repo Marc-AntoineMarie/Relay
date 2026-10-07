@@ -25,6 +25,38 @@ export interface Settings {
   agentic: boolean;
   workspaceRoot: string;
   commandPolicy: CommandPolicy;
+  askQuestions: boolean;
+  globalMemory: string;
+  projectMemory: boolean;
+}
+
+export interface PlanQuestion {
+  question: string;
+  options?: string[];
+}
+
+export interface ProjectInfo {
+  name: string;
+  root: string;
+  updated: number;
+  messages: number;
+  last?: string;
+}
+
+export interface ConversationMessage {
+  id: string;
+  at: string;
+  role: "user" | "relay";
+  kind: "prompt" | "answer" | "fix" | "questions" | "result";
+  text: string;
+  analysis?: string;
+  assumptions?: string[];
+  questions?: PlanQuestion[];
+  tasks?: Array<{ id: string; description: string; tier: Tier; status: string; model?: string; provider?: string }>;
+  files?: string[];
+  outcome?: "done" | "failed" | "stopped";
+  cost?: { billed: number; reference: number; durationMs: number; tokens: number };
+  error?: string;
 }
 
 export type CommandPolicy = "ask" | "safe" | "auto";
@@ -247,7 +279,9 @@ export type ServerEvent =
       to: { provider?: string; model: string };
       reason: string;
     }
-  | { type: "workspace"; root: string; policy: CommandPolicy; round?: number }
+  | { type: "workspace"; root: string; name?: string; policy: CommandPolicy; round?: number }
+  | { type: "questions"; questions: PlanQuestion[]; analysis: string }
+  | { type: "memory"; root: string }
   | { type: "file:write"; taskId: string; path: string; bytes: number; created: boolean }
   | { type: "command:start"; taskId: string; id: string; command: string }
   | {
