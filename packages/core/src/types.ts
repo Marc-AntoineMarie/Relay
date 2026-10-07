@@ -33,6 +33,9 @@ export type TaskType =
   | "document" // écrire ou mettre à jour la documentation
   | "clarify"; // demander des précisions quand la demande est trop vague
 
+/** Besoins d'une tâche (étiquettes de capacité), en plus de son niveau. */
+export type Capability = "code" | "reasoning" | "long_context" | "web" | "fast";
+
 export type TaskStatus = "pending" | "running" | "done" | "failed" | "escalated";
 
 export type PipelineStatus = "pending" | "running" | "done" | "failed";
@@ -63,6 +66,8 @@ export interface Task {
   type: TaskType;
   description: string;
   tier: RouteTier;
+  /** Besoins spécifiques (code, raisonnement, long contexte, web, rapide). */
+  needs?: Capability[];
   /** IDs des tâches prérequises. Sans dépendance mutuelle ⇒ parallélisables (v0.2). */
   dependsOn: string[];
   /** Assemblée par l'exécuteur à partir des sorties des dépendances. */
@@ -223,7 +228,17 @@ export interface Provider {
 export type PipelineEvent =
   | { type: "pipeline:start"; pipeline: Pipeline }
   | { type: "pipeline:plan"; pipeline: Pipeline; tasks: Task[] }
-  | { type: "task:start"; taskId: string; model: string; effort?: Effort }
+  | {
+      type: "task:route";
+      taskId: string;
+      provider: string;
+      model: string;
+      effort?: Effort;
+      reason: string;
+      alternatives: RouteAlternative[];
+    }
+  | { type: "task:start"; taskId: string; model: string; provider?: string; effort?: Effort }
+  | { type: "log"; entry: LogEntry }
   | { type: "task:chunk"; taskId: string; text: string }
   | { type: "task:done"; taskId: string; result: TaskIO; metrics: TaskMetrics }
   | { type: "task:failed"; taskId: string; error: string; metrics: TaskMetrics; description?: ErrorDescription }
@@ -238,6 +253,24 @@ export type PipelineEvent =
   | { type: "pipeline:failed"; pipeline: Pipeline; error: string; description?: ErrorDescription };
 
 export type PipelineEventType = PipelineEvent["type"];
+
+export interface RouteAlternative {
+  provider: string;
+  model: string;
+  reason: string;
+}
+
+export type LogCategory = "plan" | "route" | "request" | "response" | "fallback" | "error" | "info";
+
+/** Entrée du journal : une ligne lisible + le détail brut, dépliable dans l'UI. */
+export interface LogEntry {
+  at: number;
+  level: "info" | "warn" | "error";
+  category: LogCategory;
+  taskId?: string;
+  title: string;
+  detail?: string;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Métriques

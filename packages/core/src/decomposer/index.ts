@@ -8,8 +8,10 @@
  *  - JSON/plan invalide → relance de réparation (sortie fautive + erreur renvoyées au modèle).
  */
 import { z } from "zod";
+import { isCapability } from "../catalog.js";
 import type {
   CompletionRequest,
+  LogEntry,
   Message,
   ModelAssignment,
   Pipeline,
@@ -45,6 +47,8 @@ export const PlanTaskSchema = z.object({
   description: z.string(),
   dependsOn: z.array(z.coerce.string()),
   expectedOutput: z.string(),
+  // Tolérant : les étiquettes inconnues sont ignorées plutôt que de rejeter le plan.
+  needs: z.array(z.string()).optional(),
 });
 
 export const PlanSchema = z.object({
@@ -85,6 +89,8 @@ export interface DecomposeOptions {
   provider: Provider;
   /** Assignation modèle du décomposeur (depuis relay.config.json). */
   model: ModelAssignment;
+  /** Journal des tentatives (requête, réponse brute, réparations). */
+  onLog?: (entry: LogEntry) => void;
 }
 
 /** Décompose un prompt en pipeline (tâches non encore exécutées). */
@@ -103,8 +109,15 @@ ${JSON.stringify(schema)}`,
 
   let maxTokens = INITIAL_MAX_TOKENS;
   let lastError: DecomposerError | undefined;
+  const log = (entry: Omit<LogEntry, "at" | "category">): void =>
+    opts.onLog?.({ at: Date.now(), category: "plan", ...entry });
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    log({
+      level: "info",
+      title: `Plan : tentative ${attempt + 1} → ${opts.provider.name} · ${opts.model.model}`,
+      detail: `[système]\n${DECOMPOSER_SYSTEM_PROMPT}\n\n[demande]\n${messages.at(-1)?.content ?? ""}`,
+    });
     const { text, stop } = await collect(opts.provider, {
       model: opts.model.model,
       effort: opts.model.effort,
@@ -120,10 +133,22 @@ ${JSON.stringify(schema)}`,
       }
       const plan = parsePlan(text);
       validateDependencies(plan);
+      log({
+        level: "info",
+        title: `Plan prêt : ${plan.tasks.length} tâche(s)`,
+        detail: `${plan.analysis}\n\n${plan.tasks
+          .map((t) => `[${t.id}] ${t.tier}/${t.type}${t.needs?.length ? ` {${t.needs.join(", ")}}` : ""} — ${t.description}`)
+          .join("\n")}`,
+      });
       return buildPipeline(opts, plan);
     } catch (err) {
       if (!(err instanceof DecomposerError)) throw err;
       lastError = err;
+      log({
+        level: "warn",
+        title: `Plan rejeté (${err.message}) → ${err.kind === "truncated" ? "relance avec plus de tokens" : "relance de réparation"}`,
+        detail: text,
+      });
       if (err.kind === "truncated") {
         maxTokens *= 2; // même demande, plus de place
       } else {
@@ -169,16 +194,20 @@ Renvoie UNIQUEMENT l'objet JSON complet et valide, conforme au schéma demandé 
 }
 
 function buildPipeline(opts: DecomposeOptions, plan: Plan): Pipeline {
-  const tasks: Task[] = plan.tasks.map((t) => ({
-    id: t.id,
-    type: t.type,
-    description: t.description,
-    tier: t.tier,
-    dependsOn: t.dependsOn,
-    status: "pending",
-    attempts: [],
-    expectedOutput: t.expectedOutput,
-  }));
+  const tasks: Task[] = plan.tasks.map((t) => {
+    const needs = [...new Set((t.needs ?? []).filter(isCapability))];
+    return {
+      id: t.id,
+      type: t.type,
+      description: t.description,
+      tier: t.tier,
+      ...(needs.length > 0 ? { needs } : {}),
+      dependsOn: t.dependsOn,
+      status: "pending",
+      attempts: [],
+      expectedOutput: t.expectedOutput,
+    };
+  });
   return {
     id: crypto.randomUUID(),
     prompt: opts.prompt,

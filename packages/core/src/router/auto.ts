@@ -1,0 +1,179 @@
+/**
+ * Routage automatique multi-comptes : pour chaque tâche, classe tous les modèles du pool
+ * (tous les comptes connectés) selon la stratégie, et explique le choix.
+ *
+ * Règles dures : jamais de modèle sous-dimensionné (niveau < tier de la tâche), jamais de
+ * tâche « web » sans modèle web, modèle retiré/clé refusée écarté, plafonds par compte.
+ * Score (plus bas = meilleur) : coût, sur-dimensionnement, besoins non couverts, lenteur,
+ * qualité, santé récente — pondérés par la stratégie.
+ */
+import { CAPABILITY_LABEL, profileModel } from "../catalog.js";
+import type { ProviderRequestError } from "../errors.js";
+import type { BillingMode, Capability, Effort, Provider, RouteTier, Task } from "../types.js";
+import type { HealthTracker } from "./health.js";
+import type { Router } from "./index.js";
+
+export type Strategy = "economy" | "balanced" | "quality";
+export const STRATEGIES: readonly Strategy[] = ["economy", "balanced", "quality"];
+
+export interface PoolEntry {
+  provider: string;
+  model: string;
+  billing: BillingMode;
+}
+
+/** Ce qu'un compte a le droit de faire en mode automatique. */
+export interface AccountPolicy {
+  enabled: boolean;
+  /** Niveaux autorisés (ex. Claude Code réservé à « deep »). Absent ⇒ tous. */
+  levels?: RouteTier[];
+  /** Nombre max d'appels par run (préserver un quota d'abonnement). */
+  maxCallsPerRun?: number;
+}
+
+export interface RouteCandidate {
+  provider: string;
+  model: string;
+  effort?: Effort;
+  /** Pourquoi ce modèle (affiché dans l'UI et le journal). */
+  reason: string;
+  score: number;
+}
+
+/** Ce dont l'exécuteur a besoin pour router chaque tâche (mode manuel ou automatique). */
+export interface TaskRouting {
+  /** Candidats classés, meilleur d'abord. */
+  candidates(task: Pick<Task, "tier" | "needs">): RouteCandidate[];
+  provider(name: string): Provider;
+  /** Appelé quand un candidat est réellement utilisé. */
+  onUse?(candidate: RouteCandidate): void;
+  /** Résultat d'un appel : sans erreur ⇒ succès. */
+  report?(candidate: RouteCandidate, error?: ProviderRequestError): void;
+}
+
+const LEVEL: Record<RouteTier, number> = { quick: 0, build: 1, deep: 2 };
+const EFFORT: Record<RouteTier, Effort> = { quick: "low", build: "medium", deep: "high" };
+const SPEED = { fast: 0, normal: 0.5, slow: 1 } as const;
+const HEALTH_PENALTY: Record<string, number> = { overloaded: 4, timeout: 4, rate_limited: 6, network: 3 };
+const HEALTH_LABEL: Record<string, string> = {
+  overloaded: "saturé",
+  timeout: "lent à répondre",
+  rate_limited: "quota atteint",
+  network: "injoignable",
+};
+
+interface Weights {
+  cost: number;
+  over: number;
+  needs: number;
+  speed: number;
+  quality: number;
+  level: number;
+  /** Coût virtuel d'un appel sur abonnement (préserver le quota). */
+  subscription: number;
+}
+
+const WEIGHTS: Record<Strategy, Weights> = {
+  economy: { cost: 3, over: 1.2, needs: 1, speed: 0.4, quality: 0.3, level: 0, subscription: 2.5 },
+  balanced: { cost: 1.5, over: 0.8, needs: 1.5, speed: 0.5, quality: 1, level: 0.3, subscription: 1 },
+  quality: { cost: 0.3, over: 0.2, needs: 2, speed: 0.1, quality: 3, level: 0.8, subscription: 0.2 },
+};
+
+export interface AutoRouterOptions {
+  strategy: Strategy;
+  policies?: Record<string, AccountPolicy>;
+  health?: HealthTracker;
+}
+
+export class AutoRouter {
+  private readonly calls = new Map<string, number>();
+
+  constructor(
+    private readonly pool: PoolEntry[],
+    private readonly opts: AutoRouterOptions,
+  ) {}
+
+  get size(): number {
+    return this.pool.length;
+  }
+
+  rank(task: Pick<Task, "tier" | "needs">): RouteCandidate[] {
+    const w = WEIGHTS[this.opts.strategy];
+    const needs: Capability[] = task.needs ?? [];
+    const required = LEVEL[task.tier];
+    const out: RouteCandidate[] = [];
+
+    for (const entry of this.pool) {
+      const policy = this.opts.policies?.[entry.provider];
+      if (policy !== undefined && !policy.enabled) continue;
+      if (policy?.levels !== undefined && !policy.levels.includes(task.tier)) continue;
+      if (policy?.maxCallsPerRun !== undefined && (this.calls.get(entry.provider) ?? 0) >= policy.maxCallsPerRun) continue;
+
+      const p = profileModel(entry.model);
+      const level = LEVEL[p.level];
+      if (level < required) continue; // jamais sous-dimensionné
+      if (needs.includes("web") && !p.tags.includes("web")) continue; // le web ne s'improvise pas
+
+      const health = this.opts.health?.status(entry.provider, entry.model);
+      if (health === "model_not_found" || health === "auth") continue;
+
+      const missing = needs.filter((n) => !p.tags.includes(n));
+      const price = (p.inputPerM + 3 * p.outputPerM) / 4; // pondéré vers la sortie, plus chère
+      const costTerm =
+        entry.billing === "per-token" ? Math.log1p(price) : entry.billing === "subscription" ? w.subscription : 0;
+      const score =
+        w.cost * costTerm +
+        w.over * (level - required) +
+        w.needs * missing.length +
+        w.speed * SPEED[p.speed] -
+        w.quality * p.quality -
+        w.level * level +
+        (health !== undefined ? (HEALTH_PENALTY[health] ?? 2) : 0);
+
+      const reason = [
+        entry.billing === "free" ? "gratuit" : entry.billing === "subscription" ? "abonnement" : `~$${price.toFixed(2)}/M`,
+        level === required ? `niveau ${p.level}` : `niveau ${p.level} (au-dessus de ${task.tier})`,
+        ...needs.map((n) => `${CAPABILITY_LABEL[n]} ${p.tags.includes(n) ? "✓" : "✗"}`),
+        p.speed === "fast" ? "rapide" : "",
+        health !== undefined ? `récemment ${HEALTH_LABEL[health] ?? health}` : "",
+      ]
+        .filter((s) => s.length > 0)
+        .join(" · ");
+
+      out.push({ provider: entry.provider, model: entry.model, effort: EFFORT[task.tier], reason, score });
+    }
+
+    return out.sort((a, b) => a.score - b.score);
+  }
+
+  /** Compte un appel réel (plafonds par run). */
+  consume(provider: string): void {
+    this.calls.set(provider, (this.calls.get(provider) ?? 0) + 1);
+  }
+}
+
+/** Routage automatique : pool multi-comptes, repli entre fournisseurs, santé partagée. */
+export function autoRouting(
+  router: AutoRouter,
+  provider: (name: string) => Provider,
+  health?: HealthTracker,
+): TaskRouting {
+  return {
+    candidates: (task) => router.rank(task),
+    provider,
+    onUse: (c) => router.consume(c.provider),
+    report: (c, error) =>
+      error !== undefined ? health?.reportFailure(c.provider, c.model, error.kind) : health?.reportSuccess(c.provider, c.model),
+  };
+}
+
+/** Routage manuel : un provider, un modèle par tier (relay.config.json ou choix de l'UI). */
+export function manualRouting(router: Router, provider: Provider): TaskRouting {
+  return {
+    candidates: (task) => {
+      const a = router.forTier(task.tier);
+      return [{ provider: provider.name, model: a.model, effort: a.effort, reason: `choix manuel · tier ${task.tier}`, score: 0 }];
+    },
+    provider: () => provider,
+  };
+}

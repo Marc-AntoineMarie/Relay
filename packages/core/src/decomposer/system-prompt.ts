@@ -41,6 +41,14 @@ dépendances.
 
 6. Décris chaque tâche en une phrase précise qui dit QUOI faire, pas COMMENT.
 
+7. Indique dans "needs" les besoins qui comptent vraiment pour la tâche (souvent aucun ou
+   un seul) parmi :
+   - code : écrire ou modifier du code
+   - reasoning : logique, maths, algorithmique ou décision délicate
+   - long_context : beaucoup de texte ou de fichiers à lire
+   - web : information récente à chercher sur internet
+   - fast : tâche simple où la rapidité prime
+
 Les IDs de tâches sont des chaînes ("1", "2", ...). "dependsOn" ne référence que des IDs
 existants dans le plan. Renvoie une réponse conforme au schéma fourni.`;
 

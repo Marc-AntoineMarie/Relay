@@ -1,20 +1,22 @@
 /**
- * Exécuteur — parcourt le DAG en ordre topologique, chaîne les résultats et émet des
- * événements typés.
+ * Exécuteur — parcourt le DAG en ordre topologique, route chaque tâche, chaîne les
+ * résultats et émet des événements typés (dont un journal lisible).
  *
- * v0.1 : chaque tâche = un appel au provider assigné (génération), séquentiel.
- * Le provider gère le repli de modèle (saturé/retiré) ; l'exécuteur enregistre le modèle
- * réellement utilisé. Arrêt possible via `signal` (bouton « Arrêter » de l'UI).
+ * Routage : `TaskRouting` fournit des candidats classés (mode manuel : un seul ; mode
+ * automatique : tous les comptes). Si un candidat échoue (saturé, quota, retiré…), la
+ * tâche passe au suivant — éventuellement chez un autre fournisseur.
  *
- * À VENIR (worker « agent exécutant ») : remplacer `runTask` par une boucle d'outils
- * (fichiers + shell). Escalade automatique (router.escalate) et parallélisme : v0.2.
+ * À VENIR (phase D) : remplacer `runTask` par une boucle d'outils (fichiers + shell).
  */
-import { describeError } from "../errors.js";
+import { referenceCost } from "../catalog.js";
+import { describeError, ProviderRequestError } from "../errors.js";
 import { computePipelineMetrics } from "../metrics/index.js";
 import { buildWorkerPrompt } from "../decomposer/system-prompt.js";
+import { manualRouting, type RouteCandidate, type TaskRouting } from "../router/auto.js";
 import { Router } from "../router/index.js";
 import type {
   CompletionRequest,
+  LogEntry,
   Pipeline,
   PipelineEvent,
   Provider,
@@ -29,6 +31,10 @@ const WORKER_SYSTEM =
 
 /** Budget large : les modèles « thinking » consomment une partie de max_tokens en réflexion. */
 const DEFAULT_WORKER_MAX_TOKENS = 16_000;
+/** Nombre max de modèles essayés pour une même tâche. */
+const MAX_ROUTE_ATTEMPTS = 3;
+/** Référence de la baseline « tout sur le modèle le plus fort » quand rien d'autre n'est fourni. */
+const DEFAULT_BASELINE_MODEL = "claude-opus-5-5";
 
 /** Résultat brut d'un worker. */
 export interface WorkerResult {
@@ -36,7 +42,7 @@ export interface WorkerResult {
   inputTokens: number;
   outputTokens: number;
   thinkingTokens: number;
-  /** Modèle réellement utilisé si le provider a fait un repli. */
+  /** Modèle réellement utilisé si le provider a fait un repli interne. */
   servedModel?: string;
   stop?: StopReason;
 }
@@ -54,9 +60,11 @@ export type RunTask = (ctx: RunTaskContext) => Promise<WorkerResult>;
 
 export interface ExecutorOptions {
   pipeline: Pipeline;
-  provider: Provider;
-  router: Router;
-  /** Modèle de référence pour la baseline des métriques (défaut : route `deep`). */
+  /** Routage (manuel ou automatique). À défaut : `provider` + `router` (mode manuel). */
+  routing?: TaskRouting;
+  provider?: Provider;
+  router?: Router;
+  /** Modèle de référence pour la baseline des métriques. */
   baselineModel?: string;
   /** Point d'injection du worker agentique. Défaut : génération simple. */
   runTask?: RunTask;
@@ -68,11 +76,14 @@ export class ExecutorError extends Error {
   override readonly name = "ExecutorError";
 }
 
+const log = (entry: Omit<LogEntry, "at">): PipelineEvent => ({ type: "log", entry: { at: Date.now(), ...entry } });
+
 /** Exécute le pipeline et émet les événements au fil de l'eau. */
 export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEvent> {
-  const { pipeline, provider, router } = opts;
+  const { pipeline } = opts;
+  const routing = resolveRouting(opts);
   const runTask = opts.runTask ?? defaultRunTask;
-  const baselineModel = opts.baselineModel ?? router.forTier("deep").model;
+  const baselineModel = opts.baselineModel ?? opts.router?.forTier("deep").model ?? DEFAULT_BASELINE_MODEL;
 
   pipeline.status = "running";
   yield { type: "pipeline:start", pipeline };
@@ -84,83 +95,148 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
   for (const task of order) {
     if (opts.signal?.aborted === true) {
       pipeline.status = "failed";
+      yield log({ level: "warn", category: "info", title: "Pipeline arrêté par l'utilisateur" });
       yield { type: "pipeline:failed", pipeline, error: "pipeline arrêté par l'utilisateur" };
       return;
     }
 
-    const assigned = router.assign(task);
-    task.assignedModel = assigned.assignedModel;
-    task.assignedEffort = assigned.assignedEffort;
-    task.status = "running";
-
-    const model = task.assignedModel;
-    if (model === undefined) {
+    const candidates = routing.candidates(task).slice(0, MAX_ROUTE_ATTEMPTS);
+    const first = candidates[0];
+    if (first === undefined) {
+      const error = `aucun modèle disponible pour la tâche ${task.id} (niveau ${task.tier}${
+        task.needs?.length ? `, besoins : ${task.needs.join(", ")}` : ""
+      }) — vérifie tes comptes et leurs plafonds`;
       task.status = "failed";
       pipeline.status = "failed";
-      yield { type: "pipeline:failed", pipeline, error: `aucun modèle assigné pour la tâche ${task.id}` };
+      yield log({ level: "error", category: "error", taskId: task.id, title: error });
+      yield { type: "pipeline:failed", pipeline, error };
       return;
     }
 
-    yield { type: "task:start", taskId: task.id, model, effort: task.assignedEffort };
-
-    const request: CompletionRequest = {
-      model,
-      effort: task.assignedEffort,
-      system: WORKER_SYSTEM,
-      messages: [{ role: "user", content: buildTaskPrompt(pipeline, task) }],
-      maxTokens: DEFAULT_WORKER_MAX_TOKENS,
-    };
-
-    const started = Date.now();
-    const chunks: string[] = [];
-    let result: WorkerResult;
-    try {
-      result = await runTask({ task, request, provider, onChunk: (text) => chunks.push(text) });
-    } catch (err) {
-      const description = describeError(err);
-      const error = `${description.title} — ${description.detail}`;
-      const metrics = failMetrics(task, model, provider.name, started);
-      task.status = "failed";
-      task.attempts.push({ model, effort: task.assignedEffort, success: false, metrics, error });
-      taskMetrics.push(metrics);
-      yield { type: "task:failed", taskId: task.id, error, metrics, description };
-      pipeline.status = "failed";
-      yield { type: "pipeline:failed", pipeline, error, description };
-      return;
-    }
-
-    for (const text of chunks) yield { type: "task:chunk", taskId: task.id, text };
-
-    const servedModel = result.servedModel ?? model;
-    const truncated = result.stop === "length";
-    const output: TaskIO = {
-      summary: firstLine(result.text),
-      data: { result: result.text, ...(truncated ? { truncated: true } : {}) },
-    };
-    const referenceCost = provider.estimateCost(servedModel, result.inputTokens, result.outputTokens);
-    const metrics: TaskMetrics = {
+    yield {
+      type: "task:route",
       taskId: task.id,
-      model: servedModel,
-      provider: provider.name,
-      effort: task.assignedEffort,
-      tier: task.tier,
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
-      thinkingTokens: result.thinkingTokens,
-      referenceCost,
-      billedCost: provider.billing === "per-token" ? referenceCost : 0,
-      durationMs: Date.now() - started,
-      success: true,
-      escalated: false,
+      provider: first.provider,
+      model: first.model,
+      ...(first.effort !== undefined ? { effort: first.effort } : {}),
+      reason: first.reason,
+      alternatives: candidates.slice(1).map((c) => ({ provider: c.provider, model: c.model, reason: c.reason })),
     };
-    if (servedModel !== model) metrics.fallbackFrom = model;
+    yield log({
+      level: "info",
+      category: "route",
+      taskId: task.id,
+      title: `#${task.id} ${task.tier} → ${first.provider} · ${first.model}`,
+      detail: [`Raison : ${first.reason}`, ...candidates.slice(1).map((c, i) => `Repli ${i + 1} : ${c.provider} · ${c.model} (${c.reason})`)].join("\n"),
+    });
 
-    task.output = output;
-    task.status = "done";
-    task.attempts.push({ model: servedModel, effort: task.assignedEffort, success: true, metrics, result: result.text });
-    taskMetrics.push(metrics);
+    task.status = "running";
+    const prompt = buildTaskPrompt(pipeline, task);
+    let finished = false;
 
-    yield { type: "task:done", taskId: task.id, result: output, metrics };
+    for (let i = 0; i < candidates.length && !finished; i++) {
+      const c = candidates[i] as RouteCandidate;
+      const provider = routing.provider(c.provider);
+      routing.onUse?.(c);
+      task.assignedModel = c.model;
+      if (c.effort !== undefined) task.assignedEffort = c.effort;
+
+      yield { type: "task:start", taskId: task.id, model: c.model, provider: c.provider, ...(c.effort !== undefined ? { effort: c.effort } : {}) };
+      yield log({
+        level: "info",
+        category: "request",
+        taskId: task.id,
+        title: `#${task.id} requête → ${c.provider} · ${c.model}${c.effort !== undefined ? ` (effort ${c.effort})` : ""}`,
+        detail: `[système]\n${WORKER_SYSTEM}\n\n[demande]\n${prompt}`,
+      });
+
+      const request: CompletionRequest = {
+        model: c.model,
+        ...(c.effort !== undefined ? { effort: c.effort } : {}),
+        system: WORKER_SYSTEM,
+        messages: [{ role: "user", content: prompt }],
+        maxTokens: DEFAULT_WORKER_MAX_TOKENS,
+      };
+
+      const started = Date.now();
+      const chunks: string[] = [];
+      let result: WorkerResult;
+      try {
+        result = await runTask({ task, request, provider, onChunk: (text) => chunks.push(text) });
+      } catch (err) {
+        const pe = err instanceof ProviderRequestError ? err : undefined;
+        routing.report?.(c, pe);
+        const description = describeError(err);
+        const next = candidates[i + 1];
+        if (next !== undefined && pe !== undefined && (pe.retryable || pe.kind === "model_not_found")) {
+          yield log({
+            level: "warn",
+            category: "fallback",
+            taskId: task.id,
+            title: `#${task.id} ${c.provider} · ${c.model} : ${description.title.toLowerCase()} → repli sur ${next.provider} · ${next.model}`,
+            detail: description.detail,
+          });
+          continue;
+        }
+        const error = `${description.title} — ${description.detail}`;
+        const metrics = failMetrics(task, c, started);
+        task.status = "failed";
+        task.attempts.push({ model: c.model, ...(c.effort !== undefined ? { effort: c.effort } : {}), success: false, metrics, error });
+        taskMetrics.push(metrics);
+        yield log({ level: "error", category: "error", taskId: task.id, title: `#${task.id} échec : ${description.title}`, detail: description.detail });
+        yield { type: "task:failed", taskId: task.id, error, metrics, description };
+        pipeline.status = "failed";
+        yield { type: "pipeline:failed", pipeline, error, description };
+        return;
+      }
+
+      routing.report?.(c);
+      for (const text of chunks) yield { type: "task:chunk", taskId: task.id, text };
+
+      const servedModel = result.servedModel ?? c.model;
+      const truncated = result.stop === "length";
+      const output: TaskIO = {
+        summary: firstLine(result.text),
+        data: { result: result.text, ...(truncated ? { truncated: true } : {}) },
+      };
+      const refCost = referenceCost(servedModel, result.inputTokens, result.outputTokens);
+      const durationMs = Date.now() - started;
+      const metrics: TaskMetrics = {
+        taskId: task.id,
+        model: servedModel,
+        provider: c.provider,
+        ...(c.effort !== undefined ? { effort: c.effort } : {}),
+        tier: task.tier,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        thinkingTokens: result.thinkingTokens,
+        referenceCost: refCost,
+        billedCost: provider.billing === "per-token" ? refCost : 0,
+        durationMs,
+        success: true,
+        escalated: false,
+      };
+      // Repli interne au provider, ou candidat de repli du routeur.
+      if (servedModel !== c.model) metrics.fallbackFrom = c.model;
+      else if (i > 0) metrics.fallbackFrom = `${first.provider} · ${first.model}`;
+
+      task.output = output;
+      task.status = "done";
+      task.attempts.push({ model: servedModel, ...(c.effort !== undefined ? { effort: c.effort } : {}), success: true, metrics, result: result.text });
+      taskMetrics.push(metrics);
+
+      yield log({
+        level: truncated ? "warn" : "info",
+        category: "response",
+        taskId: task.id,
+        title: `#${task.id} réponse de ${servedModel} · ${result.outputTokens} tokens${
+          result.thinkingTokens > 0 ? ` (dont ${result.thinkingTokens} de réflexion)` : ""
+        } · ${(durationMs / 1000).toFixed(1)} s${truncated ? " · TRONQUÉE" : ""}`,
+        detail: result.text,
+      });
+      yield { type: "task:done", taskId: task.id, result: output, metrics };
+      finished = true;
+    }
   }
 
   const metrics = computePipelineMetrics({ pipelineId: pipeline.id, taskMetrics, baselineModel });
@@ -168,6 +244,12 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
   pipeline.status = "done";
   pipeline.finished = new Date();
   yield { type: "pipeline:done", pipeline, metrics };
+}
+
+function resolveRouting(opts: ExecutorOptions): TaskRouting {
+  if (opts.routing !== undefined) return opts.routing;
+  if (opts.provider !== undefined && opts.router !== undefined) return manualRouting(opts.router, opts.provider);
+  throw new ExecutorError("exécuteur : fournir `routing`, ou `provider` + `router`");
 }
 
 /** Worker par défaut : un appel au provider, texte accumulé. */
@@ -253,12 +335,12 @@ function topoOrder(tasks: Task[]): Task[] {
   return order;
 }
 
-function failMetrics(task: Task, model: string, providerName: string, started: number): TaskMetrics {
+function failMetrics(task: Task, c: RouteCandidate, started: number): TaskMetrics {
   return {
     taskId: task.id,
-    model,
-    provider: providerName,
-    effort: task.assignedEffort,
+    model: c.model,
+    provider: c.provider,
+    ...(c.effort !== undefined ? { effort: c.effort } : {}),
     tier: task.tier,
     inputTokens: 0,
     outputTokens: 0,
