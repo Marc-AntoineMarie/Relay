@@ -44,8 +44,9 @@ Ce qui reste à faire ou à surveiller.
 
 | Date | Contribution | Statut |
 |---|---|---|
-| 2026-10-07 | [Boucle test → correction : sessions, erreurs remontées, aperçu](2026-10-07-boucle-test-correction.md) | en attente de validation |
-| 2026-10-07 | [Phase D — actions réelles (fichiers, commandes, escalade)](2026-10-07-phase-d-actions-reelles.md) | en attente de validation |
+| 2026-10-08 | [Phase E — projets, conversations, questions de cadrage, mémoire](2026-10-08-phase-e-projets-conversations.md) | en attente de validation |
+| 2026-10-07 | [Boucle test → correction : sessions, erreurs remontées, aperçu](2026-10-07-boucle-test-correction.md) | validée |
+| 2026-10-07 | [Phase D — actions réelles (fichiers, commandes, escalade)](2026-10-07-phase-d-actions-reelles.md) | validée |
 | 2026-10-07 | [Phase C — Réglages, synthèse, coûts honnêtes](2026-10-07-phase-c-reglages-synthese.md) | validée |
 | 2026-10-07 | [Phase B — orchestrateur multi-comptes](2026-10-07-phase-b-orchestrateur.md) | validée |
 | 2026-10-06 → 07 | [Historique : du socle v0.1 à la phase A](2026-10-07-historique-avant-phase-b.md) | livré |

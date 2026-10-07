@@ -1,6 +1,6 @@
 # 2026-10-07 — Boucle test → correction : sessions, erreurs remontées, aperçu
 
-- **Statut** : en attente de validation (complément de la phase D)
+- **Statut** : validée avec la phase D
 - **Commits** : voir CHANGELOG (moteur, serveur, interface, docs)
 
 ## Demande

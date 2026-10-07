@@ -11,7 +11,31 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/), versions 
 
 ## [Non publié] — 0.1.0 en cours
 
-### Phase D — actions réelles · 2026-10-07 · *en attente de validation*
+### Phase E — projets, conversations, questions, mémoire · 2026-10-08 · *en attente de validation*
+
+Commits `00a16fb` `d4c362c` `51ba955` + docs · détail :
+[contribution](docs/contributions/2026-10-08-phase-e-projets-conversations.md)
+
+#### Ajouté
+
+- **Projets** au nom simple (proposé d'après la demande, modifiable), à l'emplacement de ton
+  choix (facultatif, sélecteur natif), ou dossier existant ouvert comme projet.
+- **Conversation** par projet, panneau principal : demandes, questions, résultats, corrections ;
+  **historique** des projets avec recherche ; suites dans le même projet ; activité en direct
+  (tâche, compte, modèle, dernière action).
+- **Questions de cadrage** quand la demande est trop floue (réponses proposées, « autre… »,
+  « Décide pour moi ») ; sinon **hypothèses** affichées. Désactivable.
+- **Mémoire** inspirée de Claude Code : `RELAY.md` par projet (tenu à jour après chaque tour,
+  modifiable), **mémoire globale** de tes préférences, conversation récente dans le contexte.
+- API : `GET /api/projects`, `GET /api/projects/detail`, `PUT /api/projects/memory`,
+  `POST /api/projects/import` ; événements `questions`, `memory`.
+
+#### Modifié
+
+- Disposition v6 : Conversation à gauche, Pipeline au centre, détails à droite.
+- La règle « clarify » du planificateur est remplacée par les questions de cadrage.
+
+### Phase D — actions réelles · 2026-10-07 · validée
 
 Commits `b8e2163` `5232b1f` `2110bda` `fc9e205` + docs · détail :
 [contribution](docs/contributions/2026-10-07-phase-d-actions-reelles.md)

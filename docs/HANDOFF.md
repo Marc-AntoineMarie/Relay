@@ -1,7 +1,7 @@
 # HANDOFF — reprendre Relay
 
 > **À lire en premier dans toute nouvelle session.** Mis à jour à chaque contribution.
-> Dernière mise à jour : **2026-10-07** — fin de la **phase D**, en attente de validation.
+> Dernière mise à jour : **2026-10-08** — fin de la **phase E**, en attente de validation.
 
 ## En une phrase
 
@@ -20,11 +20,17 @@ dossier par run, lance des commandes (tests) et corrige ; l'utilisateur voit et 
 | A | panneaux libres (dockview), graphe zoomable | ✅ livré |
 | B | routage auto multi-comptes, besoins, stratégies, plafonds, journal | ✅ validé |
 | C | écran **Réglages** (comptes, test/suppression de clés, catalogue, routage, budget), synthèse finale, coûts d'orchestration | ✅ validé |
-| **D** | **actions réelles** : dossier de travail, fichiers, commandes (Prudent/Sûr/Libre), panneaux Fichiers + Exécution, vérification + escalade ; **contrats partagés** + `spec` par tâche ; **boucle test → correction** (session par dossier, erreurs remontées en nœuds rouges, *Corriger avec Relay*, Aperçu HTML) | ✅ codé et testé en réel, **en attente de validation** |
-| E (prochaine) | **activité visible** : animation dans le graphe (quel modèle travaille sur quoi, en direct), décisions du routeur animées, liées au journal | demandée par l'utilisateur, **après validation de D** |
+| D | **actions réelles** : dossier de travail, fichiers, commandes (Prudent/Sûr/Libre), panneaux Fichiers + Exécution, vérification + escalade ; **contrats partagés** + `spec` par tâche ; **boucle test → correction** (session par dossier, erreurs remontées en nœuds rouges, *Corriger avec Relay*, Aperçu HTML) | ✅ validé |
+| **E** | **projets et conversations** : noms simples + emplacement, conversation et historique par projet, **questions de cadrage**, **mémoire** (`RELAY.md` par projet, mémoire globale), activité en direct dans le fil | ✅ codé et testé en réel, **en attente de validation** |
+| F | **Ollama intégré** : détection, installation guidée + doc, téléchargement de modèles avec progression, conseils selon la machine (7 Go de RAM, iGPU AMD → petits modèles ; modèles cloud Ollama), tests | à faire |
+| G | **terminal intégré** : xterm.js + node-pty dans le dossier du projet, sans clés API dans l'environnement, « Envoyer à Relay » sur une erreur | à faire |
+| H | **métriques sérieuses** : chaque chiffre justifié (formule, source et date des prix), Réglages › Métriques (baseline, table de prix, orchestration incluse ou non), historique (SQLite, v0.2), quotas lus chez les fournisseurs (en-têtes `x-ratelimit-*`, soldes OpenRouter/DeepSeek, compteurs locaux Gemini) | à faire |
+| I | **activité visible** : animation du graphe et des décisions du routeur, liée au journal (promise ; une partie est déjà dans la carte « en direct » de la Conversation) | à faire |
+| plus tard | **skills** (recettes réutilisables, façon Claude Code) | idée |
 
-**Prochaine action** : attendre la validation de la phase D, puis la phase « activité
-visible » (l'utilisateur trouve difficile de savoir quand un modèle travaille).
+Ordre recommandé à l'utilisateur : E → F → G → H → I (il peut le changer).
+
+**Prochaine action** : attendre la validation de la phase E, puis la phase F (Ollama).
 
 **Testé en réel** : Gemini et Groq paliers gratuits (modes auto et manuel, tâches mélangées
 entre les deux comptes, synthèse ; phase D : calculatrice Python écrite, testée par l'agent,
@@ -36,7 +42,7 @@ le rappeler à l'utilisateur, il a demandé qu'on s'en souvienne.
 
 ```bash
 pnpm install          # une fois (télécharge aussi le binaire Electron)
-pnpm test             # 110 tests Vitest (core, providers, server), hors réseau
+pnpm test             # 118 tests Vitest (core, providers, server), hors réseau
 pnpm typecheck        # tsc -b : core, providers, cli, server
 pnpm --filter @relay/web typecheck   # le front n'est pas dans tsc -b
 pnpm desktop          # build + fenêtre Electron (usage normal)
@@ -56,8 +62,8 @@ est connecté (abonnement) mais **à ne pas utiliser pour les tests** (désactiv
 |---|---|---|
 | `core` | moteur | `types.ts` (contrat), `catalog.ts` (profils modèles), `decomposer/` (plan, besoins, contrats, spec), `router/index.ts` (manuel), `router/auto.ts` (AutoRouter, TaskRouting, escalade), `router/health.ts`, `executor/` (candidats, repli, patience, escalade, événements en direct via `emit`/`streamWhile`, synthèse), `agent/` (`agenticRunTask` : boucle agent), `workspace/` (`Workspace` confiné, protocole `===FILE===`, politiques et exécution des commandes), `errors.ts`, `metrics/`, `config.ts` |
 | `providers` | adaptateurs LLM | `anthropic.ts`, `claude-code.ts` (spawn `claude -p`), `openai-compatible.ts` (Gemini/Groq/…, repli, `reasoning_effort`), `factory.ts` (presets, `createProvider`, `autoPoolModels`, filtrage, suggestions) |
-| `server` | API locale | `src/session.ts` (session `.relay/session.json`, correction directe, ids par tour) ; `src/index.ts` : `/api/state`, `/api/models`, `/api/pool`, `/api/settings` (GET/PUT → `.relay/settings.json`), `/api/keys` (+ `/test`, `/delete`), `/api/run` (SSE, modes auto/manuel, synthèse, budget, dossier de travail, validations), `/api/approve`, `/api/workspace/{runs,files,file,run,open,launches,stop}`, aperçu `GET /ws/<run>/<chemin>` ; contrôle d'origine ; `src/workspace.ts` (dossiers de run, confinement, outils installés, ouvrir dossier/VS Code) |
-| `web` | UI React + Vite | `App.tsx` (dockview, disposition **v4**, bouton Réglages, bandeau de validation), `store.tsx` (état partagé, réglages côté moteur, fichiers/commandes/validations), `panels.tsx` (Demande, Modèles, Pipeline, Tâche, Résultat, Coûts, Journal), `workspace-panels.tsx` (Fichiers, Exécution, Aperçu, détail d'erreur, validations), `Settings.tsx` (Comptes et clés, Modèles, Routage, Général), `components.tsx`, `PipelineView.tsx` (graphe zoomable) |
+| `server` | API locale | `src/projects.ts` (projets : noms, index, import, conversation, `RELAY.md`) ; `src/session.ts` (session `.relay/session.json`, correction directe, ids par tour) ; `src/index.ts` : `/api/state`, `/api/models`, `/api/pool`, `/api/settings` (GET/PUT → `.relay/settings.json`), `/api/keys` (+ `/test`, `/delete`), `/api/run` (SSE, modes auto/manuel, synthèse, budget, dossier de travail, validations), `/api/approve`, `/api/workspace/{runs,files,file,run,open,launches,stop}`, `/api/projects/{,detail,memory,import}`, aperçu `GET /ws/<dossier en base64url>/<chemin>` ; contrôle d'origine ; `src/workspace.ts` (dossiers de run, confinement, outils installés, ouvrir dossier/VS Code) |
+| `web` | UI React + Vite | `conversation.tsx` (Conversation : projets, fil, questions, résultats, mémoire) ; `App.tsx` (dockview, disposition **v6**, bouton Réglages, bandeau de validation), `store.tsx` (état partagé, réglages côté moteur, fichiers/commandes/validations), `panels.tsx` (Demande, Modèles, Pipeline, Tâche, Résultat, Coûts, Journal), `workspace-panels.tsx` (Fichiers, Exécution, Aperçu, détail d'erreur, validations), `Settings.tsx` (Comptes et clés, Modèles, Routage, Général), `components.tsx`, `PipelineView.tsx` (graphe zoomable) |
 | `desktop` | Electron | `main.cjs` : démarre le serveur en interne (port 47474, sinon libre) et ouvre la fenêtre |
 | `cli` | ligne de commande | `src/index.ts` (`--provider`, `--model`) |
 
@@ -129,7 +135,12 @@ est connecté (abonnement) mais **à ne pas utiliser pour les tests** (désactiv
   d'un dossier ont des ids `n.x`. Les erreurs vues **hors** de Relay ne remontent pas seules.
 - **Sécurité de l'API locale** : pas de CORS, origine et hôte vérifiés (`trustedRequest`) ;
   l'Aperçu est une iframe `sandbox` sans `allow-same-origin` (la page ne peut pas appeler l'API).
-- Disposition dockview mémorisée sous `relay.layout.v5` : **incrémenter la clé** si la liste
+- **Projets (phase E)** : conversation dans `<projet>/.relay/conversation.json`, session
+  technique dans `.relay/session.json`, mémoire dans `RELAY.md` (racine du projet, visible).
+  Les projets hors de `~/relay-workspaces` sont inscrits dans `.relay/projects.json` (dépôt) ;
+  l'API refuse tout autre dossier. Ne jamais proposer d'importer `/`, le dossier personnel ou
+  le dépôt Relay (refusé par `checkImportable`).
+- Disposition dockview mémorisée sous `relay.layout.v6` : **incrémenter la clé** si la liste
   des panneaux change.
 - **Phase D, sécurité des commandes** : le confinement protège les écritures de l'agent ; une commande
   autorisée (python…) peut tout faire → le mode *Sûr* évite les erreurs, pas un code

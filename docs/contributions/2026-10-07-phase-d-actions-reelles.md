@@ -1,6 +1,6 @@
 # 2026-10-07 — Phase D : actions réelles (fichiers, commandes, vérification, escalade)
 
-- **Statut** : en attente de validation par l'utilisateur
+- **Statut** : validée (l'utilisateur est passé à la suite le 2026-10-08)
 - **Commits** : `b8e2163` (moteur) · `5232b1f` (moteur, robustesse après tests réels) ·
   `2110bda` (serveur) · `fc9e205` (interface) · docs
 
