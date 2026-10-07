@@ -54,11 +54,20 @@ export const PlanTaskSchema = z.object({
   spec: z.string().optional(),
 });
 
+export const PlanQuestionSchema = z.object({
+  question: z.string(),
+  options: z.array(z.string()).max(5).optional(),
+});
+
 export const PlanSchema = z.object({
   analysis: z.string(),
+  /** Hypothèses prises faute de précision. */
+  assumptions: z.array(z.string()).optional(),
+  /** Questions de cadrage (demande trop floue) : dans ce cas, pas de tâches. */
+  questions: z.array(PlanQuestionSchema).max(3).optional(),
   /** Contrats partagés : fichiers, signatures, formats, commandes de test. */
   contracts: z.string().optional(),
-  tasks: z.array(PlanTaskSchema).min(1).max(8),
+  tasks: z.array(PlanTaskSchema).max(8),
 });
 
 export type Plan = z.infer<typeof PlanSchema>;
@@ -96,6 +105,8 @@ export interface DecomposeOptions {
   model: ModelAssignment;
   /** Journal des tentatives (requête, réponse brute, réparations). */
   onLog?: (entry: LogEntry) => void;
+  /** Le planificateur peut poser des questions de cadrage au lieu de planifier. Défaut : oui. */
+  allowQuestions?: boolean;
 }
 
 /** Décompose un prompt en pipeline (tâches non encore exécutées). */
@@ -104,7 +115,11 @@ export async function decompose(opts: DecomposeOptions): Promise<Pipeline> {
   const messages: Message[] = [
     {
       role: "user",
-      content: `${buildUserMessage(opts.prompt, opts.context)}
+      content: `${buildUserMessage(opts.prompt, opts.context)}${
+        opts.allowQuestions === false
+          ? "\n\n# Cadrage\nNe pose aucune question : planifie en prenant des hypothèses raisonnables (listées dans \"assumptions\")."
+          : ""
+      }
 
 # Format de sortie
 Réponds UNIQUEMENT avec un objet JSON valide conforme à ce schéma, sans texte ni bloc de code autour :
@@ -145,8 +160,16 @@ ${JSON.stringify(schema)}`,
       if (stop === "length") {
         throw new DecomposerError("réponse tronquée (limite de tokens atteinte)", "truncated");
       }
-      const plan = parsePlan(text);
+      const plan = parsePlan(text, opts.allowQuestions !== false);
       validateDependencies(plan);
+      if (plan.tasks.length === 0) {
+        log({
+          level: "info",
+          title: `Questions de cadrage : ${plan.questions?.length ?? 0}`,
+          detail: `${plan.analysis}\n\n${(plan.questions ?? []).map((q) => `- ${q.question}${q.options?.length ? ` (${q.options.join(" / ")})` : ""}`).join("\n")}`,
+        });
+        return buildPipeline(opts, plan, planningMetrics(opts, servedModel, usage, started));
+      }
       log({
         level: "info",
         title: `Plan prêt : ${plan.tasks.length} tâche(s)`,
@@ -267,6 +290,9 @@ function buildPipeline(opts: DecomposeOptions, plan: Plan, planning: TaskMetrics
     status: "pending",
     planning,
     ...(contracts ? { contracts } : {}),
+    ...(plan.analysis.trim() ? { analysis: plan.analysis.trim() } : {}),
+    ...(plan.assumptions?.length ? { assumptions: plan.assumptions } : {}),
+    ...(plan.questions?.length ? { questions: plan.questions.map((q) => ({ question: q.question, ...(q.options?.length ? { options: q.options } : {}) })) } : {}),
     created: new Date(),
   };
 }
@@ -281,7 +307,7 @@ function buildUserMessage(prompt: string, context: ProjectContext): string {
   return parts.join("\n");
 }
 
-function parsePlan(raw: string): Plan {
+function parsePlan(raw: string, allowQuestions = true): Plan {
   if (raw.trim().length === 0) throw new DecomposerError("réponse vide", "empty");
   let json: unknown;
   try {
@@ -297,7 +323,15 @@ function parsePlan(raw: string): Plan {
       .join(" ; ");
     throw new DecomposerError(`plan non conforme au schéma (${issues})`, "schema");
   }
-  return result.data;
+  const plan = result.data;
+  if (plan.tasks.length === 0) {
+    if (!allowQuestions || (plan.questions ?? []).length === 0) {
+      throw new DecomposerError("plan vide : donne au moins une tâche", "schema");
+    }
+  } else if (plan.questions !== undefined) {
+    delete plan.questions; // un plan avec des tâches s'exécute : les questions deviennent sans objet
+  }
+  return plan;
 }
 
 /** Vérifie que chaque `dependsOn` référence un ID existant et qu'il n'y a pas de cycle. */

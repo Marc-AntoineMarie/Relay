@@ -22,3 +22,4 @@ export * from "./workspace/workspace.js";
 export * from "./workspace/protocol.js";
 export * from "./workspace/commands.js";
 export * from "./agent/index.js";
+export * from "./memory/index.js";

@@ -1,0 +1,66 @@
+import { describe, expect, it } from "vitest";
+import { decompose, DecomposerError } from "../src/decomposer/index.js";
+import { cleanMemory, clipMemory, memoryPrompt } from "../src/memory/index.js";
+import type { CompletionRequest, ModelAssignment, Provider } from "../src/types.js";
+
+function replies(texts: string[], seen: CompletionRequest[] = []): Provider {
+  let i = 0;
+  return {
+    name: "mock",
+    billing: "free",
+    async models() {
+      return [];
+    },
+    estimateCost: () => 0,
+    async countTokens() {
+      return 0;
+    },
+    async *complete(req) {
+      seen.push(req);
+      yield { type: "text", text: texts[Math.min(i++, texts.length - 1)] ?? "" };
+      yield { type: "usage", usage: { inputTokens: 10, outputTokens: 10, thinkingTokens: 0 } };
+    },
+  };
+}
+
+const model: ModelAssignment = { provider: "mock", model: "m" };
+const questions = JSON.stringify({
+  analysis: "Une « appli » sans précision.",
+  questions: [{ question: "Quel type d'application ?", options: ["page web", "ligne de commande"] }],
+  tasks: [],
+});
+const task = { id: "1", type: "implement", tier: "build", description: "Faire", dependsOn: [], expectedOutput: "x" };
+
+describe("questions de cadrage", () => {
+  it("demande floue : le plan revient avec des questions et sans tâche", async () => {
+    const p = await decompose({ prompt: "fais une appli", context: { cwd: "/p" }, provider: replies([questions]), model });
+    expect(p.tasks).toEqual([]);
+    expect(p.questions).toEqual([{ question: "Quel type d'application ?", options: ["page web", "ligne de commande"] }]);
+    expect(p.analysis).toBe("Une « appli » sans précision.");
+  });
+
+  it("questions désactivées : on exige un plan, avec hypothèses", async () => {
+    const seen: CompletionRequest[] = [];
+    const plan = JSON.stringify({ analysis: "ok", assumptions: ["page web"], tasks: [task] });
+    const p = await decompose({ prompt: "fais une appli", context: { cwd: "/p" }, provider: replies([questions, plan], seen), model, allowQuestions: false });
+    expect(seen[0]?.messages[0]?.content).toContain("Ne pose aucune question");
+    expect(p.tasks).toHaveLength(1);
+    expect(p.assumptions).toEqual(["page web"]);
+    expect(p.questions).toBeUndefined();
+  });
+
+  it("plan vide sans question : rejeté", async () => {
+    const empty = JSON.stringify({ analysis: "?", tasks: [] });
+    await expect(decompose({ prompt: "x", context: { cwd: "/p" }, provider: replies([empty]), model })).rejects.toBeInstanceOf(DecomposerError);
+  });
+});
+
+describe("mémoire de projet", () => {
+  it("prompt complet, nettoyage et bornage", () => {
+    const prompt = memoryPrompt({ projectName: "calculatrice", current: "", turn: "Tour 1 : créée", files: ["calc.py"] });
+    expect(prompt).toContain("# calculatrice");
+    expect(prompt).toContain("(vide : premier tour)");
+    expect(cleanMemory("```markdown\n# calculatrice\n## Objectif\n```")).toBe("# calculatrice\n## Objectif\n");
+    expect(clipMemory("x".repeat(10), 4)).toBe("xxxx\n[…mémoire tronquée]");
+  });
+});

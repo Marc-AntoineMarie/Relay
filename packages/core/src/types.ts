@@ -92,11 +92,24 @@ export interface TaskAttempt {
   error?: string;
 }
 
+/** Question de cadrage posée par le planificateur quand la demande est trop floue. */
+export interface PlanQuestion {
+  question: string;
+  /** Réponses proposées (2 à 4). */
+  options?: string[];
+}
+
 export interface Pipeline {
   id: string;
   prompt: string;
   context: ProjectContext;
   tasks: Task[];
+  /** Ce que le planificateur a compris de la demande. */
+  analysis?: string;
+  /** Hypothèses prises faute de précision (affichées à l'utilisateur). */
+  assumptions?: string[];
+  /** Questions de cadrage : si présentes, pas de tâches, on attend les réponses. */
+  questions?: PlanQuestion[];
   status: PipelineStatus;
   metrics?: PipelineMetrics;
   /** Coût de la planification (comptée dans les totaux, à part des tâches). */

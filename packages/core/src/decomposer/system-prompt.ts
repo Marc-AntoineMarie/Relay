@@ -36,8 +36,13 @@ dépendances.
 4. Définis les dépendances : quelle tâche a besoin du résultat de quelle autre.
    Les tâches sans dépendance mutuelle pourront tourner en parallèle.
 
-5. Si la demande est trop vague pour produire un plan fiable, crée une seule tâche de
-   type "clarify" avec tier "quick" qui liste les questions à poser.
+5. Cadrage. Si la demande est trop vague pour un plan fiable ET qu'une réponse de
+   l'utilisateur changerait vraiment le résultat (type de programme, plateforme, fonctions
+   clés), pose 1 à 3 questions courtes dans "questions", chacune avec 2 à 4 réponses
+   proposées dans "options" (uniquement des options réalisables avec les outils présents
+   indiqués dans le contexte projet), et laisse "tasks" vide. Sinon, planifie directement et écris
+   dans "assumptions" les hypothèses prises (courtes). Ne pose jamais une question dont la
+   réponse est dans le contexte projet, la mémoire du projet ou la conversation.
 
 6. Décris chaque tâche en une phrase précise qui dit QUOI faire (le résultat attendu,
    vérifiable). Le COMMENT revient à l'agent qui l'exécute — sauf quand un détail précis
