@@ -9,32 +9,40 @@
  * - `GET|PUT /api/settings` : réglages (mode, stratégie, plafonds, budget, synthèse) → `.relay/settings.json`.
  * - `POST /api/keys`   : enregistre une clé dans `.env` ; `/api/keys/test`, `/api/keys/delete`.
  * - `POST /api/run`    : exécute un pipeline (mode auto ou manuel), streame les événements en SSE.
+ * - `POST /api/approve` : valide/refuse une commande d'agent (mode Prudent).
+ * - `/api/workspace/*` : runs précédents, fichiers d'un run, lancer une commande, ouvrir le dossier.
  * - sert l'app web buildée (packages/web/dist) si présente.
  *
  * Écoute uniquement sur 127.0.0.1 (outil local).
  */
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, normalize, extname, dirname } from "node:path";
+import { join, normalize, extname, dirname, isAbsolute } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import {
+  agenticRunTask,
   AutoRouter,
   autoRouting,
+  checkCommand,
   ConfigError,
   decompose,
   defaultRegistry,
   describeError,
   execute,
   HealthTracker,
+  launchCommand,
   loadConfig,
   profileModel,
   ProviderRequestError,
   Router,
+  runCommand,
   shouldTryAnotherModel,
   STRATEGIES,
   type AccountPolicy,
   type BillingMode,
+  type CommandPolicy,
   type Effort,
   type ErrorDescription,
   type LogEntry,
@@ -42,10 +50,12 @@ import {
   type PipelineEvent,
   type PoolEntry,
   type Provider,
+  type RunTask,
   type RelayConfig,
   type RouteTier,
   type Strategy,
   type TierModels,
+  Workspace,
 } from "@relay/core";
 import {
   autoPoolModels,
@@ -55,6 +65,15 @@ import {
   providerReadiness,
   suggestTierModels,
 } from "@relay/providers";
+import {
+  confineRunDir,
+  DEFAULT_WORKSPACE_ROOT,
+  detectEnvironment,
+  expandHome,
+  listRunDirs,
+  newRunDir,
+  openDir,
+} from "./workspace.js";
 
 const TIERS: readonly RouteTier[] = ["quick", "build", "deep"];
 /** Effort par tier pour les backends à réflexion réglable (reasoning_effort). */
@@ -163,7 +182,20 @@ interface RelaySettings {
   budgetPerRun: number | null;
   /** Étape de synthèse finale. */
   synthesis: boolean;
+  /** Phase D : les tâches écrivent de vrais fichiers et lancent des commandes. */
+  agentic: boolean;
+  /** Racine des dossiers de travail (un sous-dossier par run). */
+  workspaceRoot: string;
+  /** Commandes des agents : ask (Prudent), safe (Sûr), auto (Libre). */
+  commandPolicy: CommandPolicy;
 }
+
+const POLICIES: readonly CommandPolicy[] = ["ask", "safe", "auto"];
+const POLICY_LABEL: Record<CommandPolicy, string> = {
+  ask: "Prudent (chaque commande attend ta validation)",
+  safe: "Sûr (outils de développement seulement)",
+  auto: "Libre (tout sauf les commandes destructrices)",
+};
 
 const settingsPath = (): string => join(ROOT_DIR, ".relay", "settings.json");
 const DEFAULT_SETTINGS: RelaySettings = {
@@ -172,6 +204,9 @@ const DEFAULT_SETTINGS: RelaySettings = {
   policies: DEFAULT_POLICIES,
   budgetPerRun: null,
   synthesis: true,
+  agentic: true,
+  workspaceRoot: DEFAULT_WORKSPACE_ROOT,
+  commandPolicy: "safe",
 };
 
 /** Réglages valides : les champs inconnus ou mal typés retombent sur les défauts. */
@@ -182,6 +217,12 @@ function sanitizeSettings(raw: Partial<RelaySettings>): RelaySettings {
     policies: { ...DEFAULT_POLICIES, ...(typeof raw.policies === "object" && raw.policies !== null ? raw.policies : {}) },
     budgetPerRun: typeof raw.budgetPerRun === "number" && raw.budgetPerRun >= 0 ? raw.budgetPerRun : null,
     synthesis: typeof raw.synthesis === "boolean" ? raw.synthesis : DEFAULT_SETTINGS.synthesis,
+    agentic: typeof raw.agentic === "boolean" ? raw.agentic : DEFAULT_SETTINGS.agentic,
+    workspaceRoot:
+      typeof raw.workspaceRoot === "string" && isAbsolute(expandHome(raw.workspaceRoot.trim()))
+        ? expandHome(raw.workspaceRoot.trim())
+        : DEFAULT_SETTINGS.workspaceRoot,
+    commandPolicy: raw.commandPolicy !== undefined && POLICIES.includes(raw.commandPolicy) ? raw.commandPolicy : DEFAULT_SETTINGS.commandPolicy,
   };
 }
 
@@ -436,6 +477,63 @@ function sseLog(res: ServerResponse, entry: Omit<LogEntry, "at">): void {
   sseWrite(res, { type: "log", entry: { at: Date.now(), ...entry } satisfies LogEntry });
 }
 
+// ── Phase D : dossier de travail, worker agentique, validations ─────────────
+
+/** Commandes en attente de validation (mode Prudent), par clé. */
+const approvals = new Map<string, (ok: boolean) => void>();
+const APPROVAL_TIMEOUT_MS = 5 * 60_000;
+
+function requestApproval(res: ServerResponse, signal: AbortSignal, req: { taskId: string; id: string; command: string }): Promise<boolean> {
+  const key = randomUUID();
+  return new Promise((resolveApproval) => {
+    const finish = (ok: boolean): void => {
+      if (!approvals.delete(key)) return;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      sseWrite(res, { type: "approval:done", key, ok });
+      resolveApproval(ok);
+    };
+    const onAbort = (): void => finish(false);
+    const timer = setTimeout(() => finish(false), APPROVAL_TIMEOUT_MS);
+    approvals.set(key, finish);
+    signal.addEventListener("abort", onAbort, { once: true });
+    sseWrite(res, { type: "approval:request", key, ...req });
+  });
+}
+
+interface AgentSetup {
+  cwd: string;
+  /** Pour le planificateur : dossier neuf, outils réellement installés. */
+  conventions?: string;
+  workspace?: Workspace;
+  runTask?: RunTask;
+}
+
+/** Mode agentique : un dossier neuf par run, annoncé à l'interface. */
+async function setupAgent(settings: RelaySettings, prompt: string, res: ServerResponse, signal: AbortSignal): Promise<AgentSetup> {
+  if (!settings.agentic) return { cwd: ROOT_DIR };
+  const workspace = new Workspace(newRunDir(settings.workspaceRoot, prompt));
+  const environment = await detectEnvironment();
+  sseWrite(res, { type: "workspace", root: workspace.root, policy: settings.commandPolicy });
+  sseLog(res, {
+    level: "info",
+    category: "info",
+    title: `Dossier de travail : ${workspace.root}`,
+    detail: `Commandes des agents : ${POLICY_LABEL[settings.commandPolicy]}\nOutils détectés : ${environment || "aucun"}`,
+  });
+  return {
+    cwd: workspace.root,
+    conventions: `Dossier de travail neuf et vide. Outils installés : ${environment || "inconnus"}. Rien d'autre n'est installé et les agents ne peuvent pas installer de paquets : bibliothèque standard uniquement (ex. unittest si pytest n'est pas listé).`,
+    workspace,
+    runTask: agenticRunTask({
+      workspace,
+      policy: settings.commandPolicy,
+      ...(environment ? { environment } : {}),
+      approve: (r) => requestApproval(res, signal, r),
+    }),
+  };
+}
+
 /** Mode manuel : un backend, un modèle par tier. */
 async function runManual(body: RunBody, prompt: string, res: ServerResponse, signal: AbortSignal): Promise<void> {
   const config = safeLoadConfig();
@@ -443,20 +541,24 @@ async function runManual(body: RunBody, prompt: string, res: ServerResponse, sig
   const providerName = body.provider ?? config.decomposer.provider;
   applyTierModels(config, providerName, body);
 
+  const settings = loadSettings();
   const provider = createProvider(providerName, { cwd: ROOT_DIR });
   sseWrite(res, { type: "mode", mode: "manual", accounts: [PROVIDER_PRESETS[providerName]?.label ?? providerName] });
+  const agent = await setupAgent(settings, prompt, res, signal);
   sseWrite(res, { type: "decomposing", provider: providerName, model: config.decomposer.model });
   const pipeline = await decompose({
     prompt,
-    context: { cwd: ROOT_DIR },
+    context: { cwd: agent.cwd, ...(agent.conventions !== undefined ? { conventions: agent.conventions } : {}) },
     provider,
     model: config.decomposer,
     onLog: (entry) => sseWrite(res, { type: "log", entry }),
   });
 
+  if (agent.workspace !== undefined) pipeline.workspace = agent.workspace.root;
   sseWrite(res, { type: "routes", routes: config.routes });
-  const synthesis = body.synthesis ?? loadSettings().synthesis;
-  for await (const event of execute({ pipeline, provider, router: new Router(config), signal, synthesis })) {
+  const synthesis = body.synthesis ?? settings.synthesis;
+  const runTask = agent.runTask !== undefined ? { runTask: agent.runTask } : {};
+  for await (const event of execute({ pipeline, provider, router: new Router(config), signal, synthesis, ...runTask })) {
     sseWrite(res, event satisfies PipelineEvent);
   }
 }
@@ -501,6 +603,8 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
     return p;
   };
 
+  const agent = await setupAgent(settings, prompt, res, signal);
+
   // Planificateur : choisi par le même routeur (niveau build, deep en stratégie qualité).
   const plannerTier: RouteTier = strategy === "quality" ? "deep" : "build";
   const planners = router.rank({ tier: plannerTier }).slice(0, 3);
@@ -516,7 +620,7 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
       router.consume(c.provider);
       pipeline = await decompose({
         prompt,
-        context: { cwd: ROOT_DIR },
+        context: { cwd: agent.cwd, ...(agent.conventions !== undefined ? { conventions: agent.conventions } : {}) },
         provider: getProvider(c.provider),
         model: { provider: c.provider, model: c.model, ...(c.effort !== undefined ? { effort: c.effort } : {}) },
         onLog: (entry) => sseWrite(res, { type: "log", entry }),
@@ -539,8 +643,10 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
   }
   if (pipeline === undefined) throw new ConfigError("planification impossible");
   router.spend(pipeline.planning?.billedCost ?? 0); // le plan compte dans le budget
+  if (agent.workspace !== undefined) pipeline.workspace = agent.workspace.root;
 
-  for await (const event of execute({ pipeline, routing: autoRouting(router, getProvider, health), signal, synthesis })) {
+  const runTask = agent.runTask !== undefined ? { runTask: agent.runTask } : {};
+  for await (const event of execute({ pipeline, routing: autoRouting(router, getProvider, health), signal, synthesis, ...runTask })) {
     sseWrite(res, event satisfies PipelineEvent);
   }
 }
@@ -579,6 +685,56 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   }
 }
 
+async function handleApprove(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const { key = "", ok } = (await readBody(req)) as { key?: string; ok?: boolean };
+  const finish = approvals.get(key);
+  finish?.(ok === true);
+  sendJson(res, finish !== undefined ? 200 : 404, { found: finish !== undefined });
+}
+
+const query = (req: IncomingMessage): URLSearchParams => new URL(req.url ?? "", "http://localhost").searchParams;
+const runRoot = (root: unknown): string => confineRunDir(loadSettings().workspaceRoot, typeof root === "string" ? root : "");
+
+function handleWorkspaceRuns(res: ServerResponse): void {
+  const base = loadSettings().workspaceRoot;
+  sendJson(res, 200, { base, runs: listRunDirs(base) });
+}
+
+function handleWorkspaceFiles(req: IncomingMessage, res: ServerResponse): void {
+  const root = runRoot(query(req).get("root"));
+  sendJson(res, 200, { root, files: new Workspace(root).list() });
+}
+
+function handleWorkspaceFile(req: IncomingMessage, res: ServerResponse): void {
+  const q = query(req);
+  const path = q.get("path") ?? "";
+  sendJson(res, 200, { path, content: new Workspace(runRoot(q.get("root"))).read(path) });
+}
+
+/** Commande lancée par l'utilisateur depuis le panneau Exécution (liste noire appliquée). */
+async function handleWorkspaceRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = (await readBody(req)) as { root?: string; command?: string; stdin?: string; detached?: boolean };
+  const root = runRoot(body.root);
+  const command = (body.command ?? "").trim();
+  const check = checkCommand(command, "auto");
+  if (command.length === 0 || !check.allowed) {
+    sendJson(res, 400, { error: command.length === 0 ? "commande vide" : check.reason });
+    return;
+  }
+  if (body.detached === true) {
+    const pid = await launchCommand(command, root);
+    sendJson(res, 200, { command, launched: true, pid });
+    return;
+  }
+  sendJson(res, 200, await runCommand(command, { cwd: root, timeoutMs: 60_000, ...(body.stdin !== undefined ? { stdin: body.stdin } : {}) }));
+}
+
+async function handleWorkspaceOpen(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = (await readBody(req)) as { root?: string; target?: string };
+  await openDir(runRoot(body.root), body.target === "vscode" ? "vscode" : "folder");
+  sendJson(res, 200, { ok: true });
+}
+
 function serveStatic(req: IncomingMessage, res: ServerResponse): void {
   if (!existsSync(join(WEB_DIST, "index.html"))) {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -615,9 +771,17 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       if (url === "/api/keys/delete" && req.method === "POST") return await handleKeyDelete(req, res);
       if (url === "/api/keys" && req.method === "POST") return await handleKeys(req, res);
       if (url === "/api/run" && req.method === "POST") return await handleRun(req, res);
+      if (url === "/api/approve" && req.method === "POST") return await handleApprove(req, res);
+      if (url === "/api/workspace/runs" && req.method === "GET") return handleWorkspaceRuns(res);
+      if (url === "/api/workspace/files" && req.method === "GET") return handleWorkspaceFiles(req, res);
+      if (url === "/api/workspace/file" && req.method === "GET") return handleWorkspaceFile(req, res);
+      if (url === "/api/workspace/run" && req.method === "POST") return await handleWorkspaceRun(req, res);
+      if (url === "/api/workspace/open" && req.method === "POST") return await handleWorkspaceOpen(req, res);
       return serveStatic(req, res);
     } catch (err) {
-      if (!res.headersSent) sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+      // Erreurs des endpoints de l'espace de travail : 400 lisible (chemin refusé, fichier introuvable…).
+      const status = url.startsWith("/api/workspace/") ? 400 : 500;
+      if (!res.headersSent) sendJson(res, status, { error: err instanceof Error ? err.message : String(err) });
       else res.end();
     }
   })();
