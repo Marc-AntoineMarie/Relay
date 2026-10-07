@@ -27,7 +27,7 @@ h2 { font-size: 13px; margin: 0; letter-spacing: 0.2px; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 
-.app { min-height: 100%; display: flex; flex-direction: column; }
+.app { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 
 /* ── barre du haut ─────────────────────────────── */
 .topbar { display: flex; align-items: center; gap: 14px; padding: 12px 22px; border-bottom: 1px solid var(--border); background: var(--panel); }
@@ -38,11 +38,8 @@ h2 { font-size: 13px; margin: 0; letter-spacing: 0.2px; }
 .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid currentColor; }
 .banner { padding: 8px 22px; font-size: 13px; background: rgba(229, 165, 59, 0.12); color: var(--amber); border-bottom: 1px solid rgba(229, 165, 59, 0.3); }
 
-.layout { display: grid; grid-template-columns: 290px 1fr; flex: 1; min-height: 0; }
-
-/* ── panneau des backends ──────────────────────── */
-.sidebar { border-right: 1px solid var(--border); padding: 16px; background: var(--panel-2); overflow: auto; }
-.providers { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+/* ── comptes ───────────────────────────────────── */
+.providers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .provider { border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: var(--panel); }
 .provider.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .provider-pick { width: 100%; display: flex; align-items: center; gap: 8px; background: none; border: none; padding: 2px; font-size: 13px; color: var(--text); cursor: pointer; }
@@ -80,16 +77,14 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .badge.ok { color: var(--green); background: rgba(53, 195, 137, 0.14); }
 .badge.warn { color: var(--amber); background: rgba(229, 165, 59, 0.14); }
 
-/* ── zone principale ───────────────────────────── */
-.main { padding: 18px 22px; overflow: auto; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
-.composer { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+/* ── panneaux ──────────────────────────────────── */
 .composer-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.tiers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
 .tier-pick { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .tier-pick-head { display: flex; align-items: center; gap: 6px; }
 .tier-pick select, .tier-pick input { width: 100%; }
 .inline-error { margin: 0; font-size: 12px; color: var(--amber); }
-.prompt { width: 100%; resize: vertical; font-family: var(--mono); }
+.prompt { width: 100%; flex: 1; min-height: 60px; resize: none; font-family: var(--mono); }
 .run-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .run-btn { background: linear-gradient(90deg, var(--accent), var(--accent-2)); border: none; color: #fff; font-weight: 600; padding: 9px 18px; }
 .stop-btn { border-color: var(--red); color: var(--red); font-weight: 600; padding: 9px 18px; }
@@ -110,16 +105,20 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .error-actions { display: flex; gap: 8px; margin-top: 10px; }
 
 /* ── métriques (toujours visibles) ─────────────── */
-.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
-.metric { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+.metric { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
 .metric-good .metric-value { color: var(--green); }
-.metric-value { font: 700 17px var(--mono); }
+.metric-value { font: 700 15px var(--mono); white-space: nowrap; }
 .metric-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; }
 
-/* ── graphe + détail ───────────────────────────── */
-.workspace { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px; min-height: 320px; }
-.pipeline { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; overflow: auto; }
-.dag-empty { margin: 0; }
+/* ── graphe ────────────────────────────────────── */
+.dag-empty { margin: auto; padding: 24px; text-align: center; }
+.zoom-wrap { position: relative; flex: 1; min-height: 0; display: flex; }
+.zoom-viewport { flex: 1; overflow: hidden; cursor: grab; touch-action: none; background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 22px 22px; }
+.zoom-viewport:active { cursor: grabbing; }
+.zoom-content { transform-origin: 0 0; width: max-content; }
+.zoom-tools { position: absolute; top: 10px; right: 10px; z-index: 2; display: flex; align-items: center; gap: 6px; padding: 4px 6px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+.zoom-tools button { padding: 2px 9px; }
 .dag { position: relative; }
 .dag-edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
 .edge { fill: none; stroke: var(--edge); stroke-width: 1.6; }
@@ -145,7 +144,7 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .tier-build { background: rgba(91, 140, 255, 0.15); color: var(--blue); }
 .tier-deep { background: rgba(124, 92, 255, 0.15); color: var(--accent-2); }
 
-.detail { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; max-height: 640px; }
+.detail { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; min-height: 0; }
 .detail-empty { justify-content: center; text-align: center; }
 .detail-head { display: flex; align-items: center; gap: 8px; }
 .detail-title { font-size: 14px; margin: 0; }
@@ -159,9 +158,31 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .detail-error { margin: 0; font-size: 12px; color: var(--red); }
 .output { flex: 1; min-height: 120px; overflow: auto; margin: 0; padding: 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; }
 
-@media (max-width: 1100px) { .workspace { grid-template-columns: 1fr; } }
-@media (max-width: 820px) {
-  .layout { grid-template-columns: 1fr; }
-  .sidebar { border-right: none; border-bottom: 1px solid var(--border); }
-  .tiers { grid-template-columns: 1fr; }
+/* ── espace de travail (dockview) ──────────────── */
+.ghost-btn { background: none; border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; margin-left: 10px; }
+.ghost-btn:hover { color: var(--text); }
+.error-zone { padding: 10px 14px 0; }
+.dock { flex: 1; min-height: 0; padding: 8px; }
+.relay-dock { height: 100%; }
+.relay-dock.relay-dock {
+  --dv-background-color: var(--bg);
+  --dv-group-view-background-color: var(--panel);
+  --dv-tabs-and-actions-container-background-color: var(--panel-2);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--panel);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--panel-2);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--panel);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--panel-2);
+  --dv-activegroup-visiblepanel-tab-color: var(--text);
+  --dv-activegroup-hiddenpanel-tab-color: var(--muted);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--muted);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--muted);
+  --dv-tab-divider-color: var(--border);
+  --dv-separator-border: var(--border);
+  --dv-paneview-header-border-color: var(--border);
+  --dv-active-sash-color: var(--accent);
+  --dv-drag-over-background-color: rgba(91, 140, 255, 0.18);
+  --dv-drag-over-border-color: var(--accent);
+  --dv-tabs-and-actions-container-font-size: 12px;
 }
+.panel { height: 100%; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.panel-flush { padding: 0; overflow: hidden; }

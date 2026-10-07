@@ -8,6 +8,22 @@ en même temps que le commit correspondant (un bloc par commit, le plus récent 
 
 ## [Non publié] — v0.1.0 en cours (+ début dashboard v0.3)
 
+### 2026-10-07 — phase A : espace de travail en panneaux libres
+
+- **Panneaux indépendants** (dockview) : Comptes, Demande, Modèles, Pipeline, Tâche,
+  Coûts. Chacun se déplace (glisser l'onglet à gauche/droite/haut/bas ou dans un autre
+  groupe pour l'empiler), se redimensionne seul, s'agrandit ; disposition mémorisée,
+  bouton « Disposition par défaut ». Pipeline et Tâche ne sont plus liés en taille.
+- **Graphe zoomable** : molette (autour du curseur), glisser le fond pour se déplacer,
+  `+ − Ajuster`, double-clic pour recadrer, cadrage auto à l'arrivée du plan uniquement
+  (pas à chaque changement de statut).
+- **Architecture front** : état partagé dans un contexte (`store.tsx`), panneaux dans
+  `panels.tsx`, coquille dans `App.tsx`. Cartes de coûts compactées, géométrie des
+  nœuds resserrée pour la lisibilité.
+- Vérifié visuellement (capture Electron) + run réel piloté depuis l'UI (5 tâches, 48 s).
+- Dépendance ajoutée : `dockview-react` (agencement façon IDE ; justifiée vs ~1 000
+  lignes à réécrire).
+
 ### 2026-10-07 — fiabilisation : modèles, erreurs, front
 
 Premier pipeline réel de bout en bout validé (Gemini gratuit : 4/4 tâches, $0, repli
