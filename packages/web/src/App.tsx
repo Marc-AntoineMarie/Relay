@@ -70,7 +70,12 @@ export default function App(): React.JSX.Element {
       if (cancelled) return;
       setDetectedModels(ms);
       if (ms.length > 0 && model.trim().length === 0) {
-        const preferred = ms.find((m) => m.includes("flash")) ?? ms[0];
+        // Préfère un alias "latest" (jamais déprécié) et un modèle "flash" (rapide/gratuit).
+        const preferred =
+          ms.find((m) => m.includes("flash") && m.includes("latest")) ??
+          ms.find((m) => m.includes("latest")) ??
+          ms.find((m) => m.includes("flash")) ??
+          ms[0];
         if (preferred !== undefined) setModel(preferred);
       }
     });
