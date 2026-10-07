@@ -92,6 +92,31 @@ import {
   type SessionTurn,
 } from "./session.js";
 import {
+  checkRemote,
+  closeTunnel,
+  deleteModel,
+  ensureKey,
+  installManaged,
+  LOCAL_URL,
+  machineInfo,
+  machineVerdict,
+  modelFit,
+  ollamaStatus,
+  openTunnel,
+  pullModel,
+  REMOTE_INSTALL,
+  REMOTE_SPECS,
+  shutdownOllama,
+  sshRun,
+  startServer as startOllama,
+  stopServer as stopOllama,
+  SUGGESTED_MODELS,
+  testModel,
+  TUNNEL_URL,
+  tunnelState,
+  type RemoteTarget,
+} from "./ollama.js";
+import {
   appendMessage,
   checkImportable,
   conversationContext,
@@ -225,6 +250,10 @@ interface RelaySettings {
   globalMemory: string;
   /** Tenir à jour RELAY.md (mémoire du projet) après chaque tour. */
   projectMemory: boolean;
+  /** Ollama utilisé par Relay : sur cette machine, ou sur un VPS (tunnel SSH). */
+  ollamaTarget: "local" | "remote";
+  /** VPS pour Ollama (la clé SSH reste sur ta machine). */
+  ollamaRemote: Partial<RemoteTarget> | null;
 }
 
 const POLICIES: readonly CommandPolicy[] = ["ask", "safe", "auto"];
@@ -247,6 +276,8 @@ const DEFAULT_SETTINGS: RelaySettings = {
   askQuestions: true,
   globalMemory: "",
   projectMemory: true,
+  ollamaTarget: "local",
+  ollamaRemote: null,
 };
 
 /** Réglages valides : les champs inconnus ou mal typés retombent sur les défauts. */
@@ -266,6 +297,16 @@ function sanitizeSettings(raw: Partial<RelaySettings>): RelaySettings {
     askQuestions: typeof raw.askQuestions === "boolean" ? raw.askQuestions : DEFAULT_SETTINGS.askQuestions,
     globalMemory: typeof raw.globalMemory === "string" ? raw.globalMemory.slice(0, 4_000) : DEFAULT_SETTINGS.globalMemory,
     projectMemory: typeof raw.projectMemory === "boolean" ? raw.projectMemory : DEFAULT_SETTINGS.projectMemory,
+    ollamaTarget: raw.ollamaTarget === "remote" ? "remote" : "local",
+    ollamaRemote:
+      typeof raw.ollamaRemote === "object" && raw.ollamaRemote !== null
+        ? {
+            ...(typeof raw.ollamaRemote.host === "string" ? { host: raw.ollamaRemote.host.trim() } : {}),
+            ...(typeof raw.ollamaRemote.user === "string" ? { user: raw.ollamaRemote.user.trim() } : {}),
+            ...(typeof raw.ollamaRemote.port === "number" ? { port: raw.ollamaRemote.port } : {}),
+            ...(typeof raw.ollamaRemote.keyPath === "string" ? { keyPath: raw.ollamaRemote.keyPath.trim() } : {}),
+          }
+        : null,
   };
 }
 
@@ -1156,6 +1197,127 @@ async function handleWorkspaceOpen(req: IncomingMessage, res: ServerResponse): P
   sendJson(res, 200, { ok: true });
 }
 
+// ── Ollama (phase F) ────────────────────────────────────────────────────────
+
+/** Adresse de l'Ollama utilisé : local, ou VPS via le tunnel SSH s'il est ouvert. */
+function ollamaUrl(): string {
+  return loadSettings().ollamaTarget === "remote" && tunnelState().running ? TUNNEL_URL : LOCAL_URL;
+}
+
+/** Les providers lisent OLLAMA_BASE_URL : on la met à jour et on oublie la liste de modèles en cache. */
+function applyOllamaUrl(): void {
+  process.env["OLLAMA_BASE_URL"] = `${ollamaUrl()}/v1`;
+  modelCache.delete("ollama");
+}
+
+async function handleOllamaStatus(res: ServerResponse): Promise<void> {
+  const settings = loadSettings();
+  const machine = machineInfo();
+  const [local, remote] = await Promise.all([
+    ollamaStatus(LOCAL_URL),
+    settings.ollamaTarget === "remote" && tunnelState().running ? ollamaStatus(TUNNEL_URL) : Promise.resolve(null),
+  ]);
+  sendJson(res, 200, {
+    machine,
+    verdict: machineVerdict(machine),
+    local,
+    remote,
+    target: settings.ollamaTarget,
+    remoteTarget: settings.ollamaRemote,
+    tunnel: tunnelState(),
+    url: ollamaUrl(),
+    suggestions: SUGGESTED_MODELS.map((m) => ({ ...m, fit: modelFit(m.sizeGb, machine) })),
+  });
+}
+
+/** Réponse en flux (SSE) pour les opérations longues : installation, téléchargement de modèle. */
+async function streamTask(
+  res: ServerResponse,
+  req: IncomingMessage,
+  task: (send: (event: Record<string, unknown>) => void, signal: AbortSignal) => Promise<unknown>,
+): Promise<void> {
+  res.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache", Connection: "keep-alive" });
+  const abort = new AbortController();
+  res.on("close", () => abort.abort());
+  const send = (event: Record<string, unknown>): void => sseWrite(res, event);
+  try {
+    const result = await task(send, abort.signal);
+    send({ type: "done", ...(result !== undefined ? { result } : {}) });
+  } catch (err) {
+    send({ type: "error", error: describeError(err) });
+  } finally {
+    applyOllamaUrl();
+    res.end();
+  }
+  void req;
+}
+
+async function handleOllama(url: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = req.method === "POST" ? ((await readBody(req)) as Record<string, unknown>) : {};
+  const model = typeof body["model"] === "string" ? body["model"].trim() : "";
+  const MODEL_RE = /^[A-Za-z0-9._\/:-]{1,120}$/;
+
+  switch (url) {
+    case "/api/ollama/status":
+      return handleOllamaStatus(res);
+    case "/api/ollama/install":
+      return streamTask(res, req, (send, signal) =>
+        installManaged((p) => send({ type: "progress", ...p }), signal).then((version) => ({ version })),
+      );
+    case "/api/ollama/start":
+      await startOllama();
+      applyOllamaUrl();
+      return sendJson(res, 200, { ok: true });
+    case "/api/ollama/stop":
+      return sendJson(res, 200, { stopped: stopOllama() });
+    case "/api/ollama/pull":
+      if (!MODEL_RE.test(model)) return sendJson(res, 400, { error: "nom de modèle invalide" });
+      return streamTask(res, req, (send, signal) => pullModel(ollamaUrl(), model, (p) => send({ type: "progress", ...p }), signal));
+    case "/api/ollama/delete":
+      if (!MODEL_RE.test(model)) return sendJson(res, 400, { error: "nom de modèle invalide" });
+      await deleteModel(ollamaUrl(), model);
+      applyOllamaUrl();
+      return sendJson(res, 200, { ok: true });
+    case "/api/ollama/test":
+      if (!MODEL_RE.test(model)) return sendJson(res, 400, { error: "nom de modèle invalide" });
+      return sendJson(res, 200, await testModel(ollamaUrl(), model));
+    case "/api/ollama/remote/key":
+      return sendJson(res, 200, ensureKey());
+    case "/api/ollama/remote/check": {
+      const t = checkRemote(body as Partial<RemoteTarget>);
+      const lines: string[] = [];
+      const code = await sshRun(t, REMOTE_SPECS, (l) => lines.push(l), 30_000);
+      saveSettings({ ...loadSettings(), ollamaRemote: t });
+      return sendJson(res, 200, { ok: code === 0, lines });
+    }
+    case "/api/ollama/remote/install": {
+      const t = checkRemote(body as Partial<RemoteTarget>);
+      return streamTask(res, req, async (send) => {
+        const code = await sshRun(t, REMOTE_INSTALL, (line) => send({ type: "log", line }));
+        if (code !== 0) {
+          throw new Error(
+            "l'installation sur le VPS a échoué (voir les lignes ci-dessus). Si « sudo » demande un mot de passe, lance la commande officielle à la main sur le VPS : curl -fsSL https://ollama.com/install.sh | sh",
+          );
+        }
+      });
+    }
+    case "/api/ollama/remote/connect": {
+      const t = checkRemote(body as Partial<RemoteTarget>);
+      await openTunnel(t);
+      saveSettings({ ...loadSettings(), ollamaTarget: "remote", ollamaRemote: t });
+      applyOllamaUrl();
+      return sendJson(res, 200, { ok: true, url: ollamaUrl() });
+    }
+    case "/api/ollama/remote/disconnect":
+      closeTunnel();
+      saveSettings({ ...loadSettings(), ollamaTarget: "local" });
+      applyOllamaUrl();
+      return sendJson(res, 200, { ok: true });
+    default:
+      return sendJson(res, 404, { error: "inconnu" });
+  }
+}
+
 function serveStatic(req: IncomingMessage, res: ServerResponse): void {
   if (!existsSync(join(WEB_DIST, "index.html"))) {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -1199,6 +1361,7 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       if (url === "/api/run" && req.method === "POST") return await handleRun(req, res);
       if (url === "/api/approve" && req.method === "POST") return await handleApprove(req, res);
       if (url === "/api/workspace/runs" && req.method === "GET") return handleWorkspaceRuns(res);
+      if (url.startsWith("/api/ollama/")) return await handleOllama(url, req, res);
       if (url === "/api/projects" && req.method === "GET") return handleProjects(res);
       if (url === "/api/projects/detail" && req.method === "GET") return handleProjectDetail(req, res);
       if (url === "/api/projects/memory" && req.method === "PUT") return await handleProjectMemory(req, res);
@@ -1213,7 +1376,8 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       return serveStatic(req, res);
     } catch (err) {
       // Erreurs des endpoints de l'espace de travail : 400 lisible (chemin refusé, fichier introuvable…).
-      const status = url.startsWith("/api/workspace/") || url.startsWith("/api/projects") || url.startsWith("/ws/") ? 400 : 500;
+      const status =
+        url.startsWith("/api/workspace/") || url.startsWith("/api/projects") || url.startsWith("/api/ollama/") || url.startsWith("/ws/") ? 400 : 500;
       if (!res.headersSent) sendJson(res, status, { error: err instanceof Error ? err.message : String(err) });
       else res.end();
     }
@@ -1231,6 +1395,17 @@ export interface StartedServer {
  */
 export function startServer(options: { port?: number } = {}): Promise<StartedServer> {
   loadEnv();
+  applyOllamaUrl();
+  // Ollama sur VPS : on rouvre le tunnel en arrière-plan (sans bloquer le démarrage).
+  const boot = loadSettings();
+  if (boot.ollamaTarget === "remote" && boot.ollamaRemote !== null) {
+    try {
+      const t = checkRemote(boot.ollamaRemote);
+      void openTunnel(t).then(applyOllamaUrl, () => undefined);
+    } catch {
+      /* VPS incomplet : réglages à revoir */
+    }
+  }
   const server = createServer(handler);
   const port = options.port ?? PORT;
   return new Promise((resolve, reject) => {
@@ -1241,7 +1416,11 @@ export function startServer(options: { port?: number } = {}): Promise<StartedSer
       const actualPort = typeof addr === "object" && addr !== null ? addr.port : port;
       resolve({
         port: actualPort,
-        close: () => new Promise<void>((res) => server.close(() => res())),
+        close: () =>
+          new Promise<void>((res) => {
+            shutdownOllama(); // ni tunnel ni serveur Ollama laissés derrière soi
+            server.close(() => res());
+          }),
       });
     });
   });
@@ -1269,6 +1448,8 @@ function runCli(): void {
       process.exit(1);
     });
 }
+
+process.on("exit", shutdownOllama);
 
 process.on("uncaughtException", (err) => {
   console.error(`[relay] exception non gérée : ${err instanceof Error ? err.stack ?? err.message : String(err)}`);

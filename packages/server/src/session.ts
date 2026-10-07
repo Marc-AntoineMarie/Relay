@@ -122,6 +122,7 @@ export function fixPipeline(fix: FixRequest, context: Pipeline["context"], contr
         type: "implement",
         tier: "build",
         needs: ["code"],
+        mustVerify: true,
         description: `Corriger le projet pour que ${fix.source} fonctionne${note ? ` (${note})` : ""}, puis vérifier.`,
         spec: `L'utilisateur a testé ${fix.source}${
           fix.exitCode !== undefined && fix.exitCode !== null ? ` (code ${fix.exitCode})` : ""
@@ -130,7 +131,7 @@ Objectif : que l'utilisateur puisse réellement utiliser le programme comme il l
 - Trouve la cause (lis les fichiers concernés avec ===READ=== si besoin) et corrige-la.
 - INTERDIT de masquer l'erreur : pas de faux module, de bouchon (stub), de try/except qui avale l'erreur, ni de fonctionnalité désactivée — le programme doit faire ce qui est demandé.
 - Si un outil ou un module manque sur la machine (voir « Outils » et « ABSENTS »), change d'approche avec ce qui est présent (ex. page HTML autonome à ouvrir dans le navigateur au lieu de tkinter, ou interface en ligne de commande), et adapte tests et README.
-- Vérifie : relance la commande si elle se termine seule ; pour une application graphique ou interactive, vérifie au moins l'import et la logique.
+- Vérifie en relançant EXACTEMENT la commande de l'utilisateur avec ===RUN=== ; si le programme ne s'arrête pas seul (fenêtre, jeu, serveur), utilise ===RUN: timeout 5 <commande>=== (« toujours en marche » = il démarre bien).
 - Termine par la commande exacte pour lancer le programme.`,
         dependsOn: [],
         status: "pending",

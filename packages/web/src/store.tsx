@@ -96,7 +96,7 @@ interface Catalog {
   error?: ErrorDescription;
 }
 
-export type SettingsSection = "accounts" | "models" | "routing" | "general";
+export type SettingsSection = "accounts" | "models" | "routing" | "ollama" | "general";
 
 const DEFAULT_SETTINGS: Settings = {
   mode: "auto",
@@ -143,6 +143,7 @@ function useRelayState() {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
   const [pool, setPool] = useState<PoolResponse | null>(null);
+  const [poolTick, setPoolTick] = useState(0);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [runInfo, setRunInfo] = useState<{ mode: Mode; accounts: string[]; strategy?: Strategy } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
@@ -252,7 +253,7 @@ function useRelayState() {
     return () => {
       cancelled = true;
     };
-  }, [state, policiesKey]);
+  }, [state, policiesKey, poolTick]);
 
   // Chrono pendant l'exécution : montre que ça tourne.
   useEffect(() => {
@@ -852,6 +853,8 @@ function useRelayState() {
     importFolder: (path: string) => void importFolder(path),
     saveMemory,
     refreshProjects: () => void refreshProjects(),
+    /** Recharge le pool (après un changement côté Ollama, par exemple). */
+    refreshPool: () => setPoolTick((t) => t + 1),
     answer: (text: string) => void run({ text, kind: "answer" }),
     round,
     raiseError,

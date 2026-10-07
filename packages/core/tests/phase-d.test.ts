@@ -325,6 +325,18 @@ describe("worker agentique", () => {
     expect(events.at(-1)?.type).toBe("pipeline:done");
   });
 
+  it("correction (mustVerify) : modifier sans relancer la commande ne suffit pas", async () => {
+    const provider = scripted((_req, turn) =>
+      turn === 0 ? "===FILE: main.py===\nprint('ok')\n===END===\nCorrigé." : "===RUN: python3 main.py===\nVérifié.",
+    );
+    const p = pipeline(dir);
+    (p.tasks[0] as Task).mustVerify = true;
+    const events = await collect(execute({ pipeline: p, routing: routing(provider, ["m1"]), runTask: agenticRunTask({ workspace: new Workspace(dir), policy: "safe" }) }));
+    expect(events.some((e) => e.type === "log" && e.entry.title.includes("non vérifiée"))).toBe(true);
+    const done = events.find((e) => e.type === "command:done");
+    expect(done?.type === "command:done" && [done.command, done.exitCode]).toEqual(["python3 main.py", 0]);
+  });
+
   it("escalade vers un modèle plus fort si les vérifications échouent encore", async () => {
     const provider = scripted((req) =>
       req.model === "fort"

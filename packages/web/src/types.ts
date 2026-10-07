@@ -30,6 +30,49 @@ export interface Settings {
   projectMemory: boolean;
 }
 
+export interface MachineInfo {
+  platform: string;
+  arch: string;
+  cpu: string;
+  cores: number;
+  ramTotalGb: number;
+  ramAvailableGb: number;
+  gpu: string | null;
+  vramGb: number | null;
+  diskFreeGb: number | null;
+}
+
+export interface OllamaServer {
+  url: string;
+  installed: boolean;
+  binary: string | null;
+  managed: boolean;
+  startedByRelay: boolean;
+  running: boolean;
+  version: string | null;
+  models: Array<{ name: string; sizeGb: number; parameters?: string; quantization?: string }>;
+  loaded: string[];
+}
+
+export interface RemoteTarget {
+  host?: string;
+  user?: string;
+  port?: number;
+  keyPath?: string;
+}
+
+export interface OllamaInfo {
+  machine: MachineInfo;
+  verdict: string;
+  local: OllamaServer;
+  remote: OllamaServer | null;
+  target: "local" | "remote";
+  remoteTarget: RemoteTarget | null;
+  tunnel: { running: boolean; error: string | null };
+  url: string;
+  suggestions: Array<{ name: string; sizeGb: number; tier: Tier; use: string; fit: "ok" | "tight" | "too_big" }>;
+}
+
 export interface PlanQuestion {
   question: string;
   options?: string[];

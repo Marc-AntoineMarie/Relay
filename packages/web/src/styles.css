@@ -418,3 +418,39 @@ button.danger { border-color: rgba(255, 92, 114, 0.5); color: var(--red); }
 .memory-editor textarea { min-height: 380px; font: 12px/1.5 var(--mono); resize: vertical; }
 .global-memory { min-height: 90px; font: 12px/1.5 var(--mono); resize: vertical; }
 .stepper-waiting { color: var(--amber); font-size: 13px; }
+
+/* ── Phase F : Ollama ────────────────────────────────────────────────────── */
+.ollama h4 { margin-top: 18px; }
+.machine-card { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
+.machine-card > div { display: flex; flex-direction: column; gap: 2px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+.machine-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.machine-card .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.verdict { margin: 8px 0; padding: 8px 10px; border-left: 3px solid var(--accent); background: rgba(91, 140, 255, 0.08); border-radius: 4px; }
+.ollama-panel { border: 1px solid var(--border); border-radius: 10px; padding: 4px 14px 10px; margin: 10px 0; }
+.ollama-panel p { margin: 6px 0; }
+.ollama-panel .dot { display: inline-block; vertical-align: middle; }
+.ollama-models { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ollama-models li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ollama-models code { font-family: var(--mono); font-weight: 600; }
+.ollama-models button { padding: 3px 10px; font-size: 12px; }
+.test-line { width: 100%; padding-left: 4px; }
+table.suggest { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-size: 13px; }
+table.suggest td { padding: 5px 6px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+table.suggest code { font-family: var(--mono); }
+table.suggest button { padding: 3px 10px; font-size: 12px; }
+.badge.err { color: var(--red); background: rgba(255, 92, 114, 0.14); }
+.progress { display: inline-flex; flex-direction: column; gap: 2px; min-width: 180px; }
+.progress-track { height: 6px; border-radius: 99px; background: var(--raise); overflow: hidden; }
+.progress-fill { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width 0.3s; }
+.progress-fill.indeterminate { width: 40%; animation: slide 1.2s infinite ease-in-out; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+.steps { margin: 8px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; }
+.steps li > strong { display: block; margin-bottom: 4px; }
+.steps button { padding: 4px 12px; font-size: 12px; }
+.vps-fields { display: grid; grid-template-columns: 2fr 1fr 70px 2fr; gap: 6px; margin-bottom: 6px; }
+.vps-fields input { font-family: var(--mono); font-size: 12px; padding: 4px 8px; min-width: 0; }
+.pubkey { width: 100%; min-height: 54px; font: 11px/1.4 var(--mono); margin: 4px 0; }
+.vps-log { margin: 6px 0; max-height: 220px; }
+.guide { margin-top: 10px; font-size: 13px; }
+.guide summary { cursor: pointer; color: var(--accent); }
+.guide ol { padding-left: 20px; }

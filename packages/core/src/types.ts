@@ -70,6 +70,8 @@ export interface Task {
   needs?: Capability[];
   /** Précisions courtes du planificateur quand la tâche est délicate (le « comment » essentiel). */
   spec?: string;
+  /** La tâche doit prouver son résultat par une commande (ex. correction d'une erreur). */
+  mustVerify?: boolean;
   /** IDs des tâches prérequises. Sans dépendance mutuelle ⇒ parallélisables (v0.2). */
   dependsOn: string[];
   /** Assemblée par l'exécuteur à partir des sorties des dépendances. */

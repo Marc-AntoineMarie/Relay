@@ -54,6 +54,7 @@ export function agenticRunTask(opts: AgentOptions): RunTask {
     const result: WorkerResult = { text: "", inputTokens: 0, outputTokens: 0, thinkingTokens: 0 };
     const written = new Set<string>();
     const commands: Array<{ command: string; exitCode: number | null }> = [];
+    let verifyNudged = false;
     let lastReply = "";
     let checksFailed = false;
 
@@ -157,6 +158,13 @@ export function agenticRunTask(opts: AgentOptions): RunTask {
           nudge = "Tu n'as lancé aucune vérification : lance-la réellement avec ===RUN===.";
         }
         if (nudge !== undefined) emit(log(task.id, "warn", `#${task.id} aucune action dans la réponse → relance`, nudge));
+      }
+      // Tâche qui doit prouver son résultat (correction) : modifier sans relancer ne suffit pas.
+      if (nudge === undefined && task.mustVerify === true && !verifyNudged && written.size > 0 && commands.length === 0 && actions.runs.length === 0) {
+        verifyNudged = true;
+        nudge =
+          "Tu as modifié des fichiers sans vérifier. Relance maintenant la commande exacte de l'utilisateur avec ===RUN=== (préfixée par « timeout 5 » si le programme ne s'arrête pas seul) et corrige si elle échoue.";
+        emit(log(task.id, "warn", `#${task.id} correction non vérifiée → relance de la vérification`));
       }
 
       checksFailed = failed > 0;

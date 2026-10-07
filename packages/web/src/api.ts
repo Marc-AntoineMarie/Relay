@@ -14,6 +14,7 @@ import type {
   LaunchState,
   ConversationMessage,
   ProjectInfo,
+  OllamaInfo,
   RunDir,
   WorkspaceFile,
 } from "./types";
@@ -129,6 +130,44 @@ export async function pickFolder(title: string): Promise<string | null> {
 }
 
 export const hasNativePicker = (): boolean => (window as unknown as { relayDesktop?: unknown }).relayDesktop !== undefined;
+
+export const getOllama = (): Promise<OllamaInfo> => call("/api/ollama/status");
+
+export const ollamaAction = <T,>(action: string, body: unknown = {}): Promise<T> => call(`/api/ollama/${action}`, post(body));
+
+/** Opération longue (installation, téléchargement de modèle) : événements SSE au fil de l'eau. */
+export async function* streamAction(action: string, body: unknown, signal?: AbortSignal): AsyncGenerator<Record<string, unknown>> {
+  const res = await fetch(`/api/ollama/${action}`, { ...post(body), ...(signal ? { signal } : {}) });
+  if (!res.ok || !res.body) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(data.error ?? `erreur ${res.status}`);
+  }
+  yield* readSse(res.body);
+}
+
+async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator<Record<string, unknown>> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sep = buffer.indexOf("\n\n");
+    while (sep >= 0) {
+      const json = buffer.slice(0, sep).split("\n").find((l) => l.startsWith("data:"))?.slice(5).trim();
+      buffer = buffer.slice(sep + 2);
+      if (json) {
+        try {
+          yield JSON.parse(json) as Record<string, unknown>;
+        } catch {
+          /* trame non-JSON : ignorée */
+        }
+      }
+      sep = buffer.indexOf("\n\n");
+    }
+  }
+}
 
 export const answerApproval = (key: string, ok: boolean): Promise<{ found: boolean }> =>
   call("/api/approve", post({ key, ok }));
