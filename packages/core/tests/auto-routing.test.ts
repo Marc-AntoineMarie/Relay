@@ -44,9 +44,22 @@ describe("AutoRouter", () => {
     expect(top(r, "deep")).toBe("claude-code/claude-opus-5-5");
   });
 
-  it("ne sous-dimensionne jamais : une tâche deep n'a que des modèles deep", () => {
-    const r = new AutoRouter(POOL, { strategy: "economy" });
-    for (const c of r.rank({ tier: "deep" })) expect(profileModel(c.model).level).toBe("deep");
+  it("les modèles du bon niveau passent d'abord ; un niveau inférieur n'est qu'un dernier recours signalé", () => {
+    const ranked = new AutoRouter(POOL, { strategy: "economy" }).rank({ tier: "deep" });
+    const levels = ranked.map((c) => profileModel(c.model).level);
+    expect(levels.indexOf("build")).toBeGreaterThan(levels.lastIndexOf("deep"));
+    expect(ranked.at(-1)?.reason).toMatch(/dernier recours/);
+  });
+
+  it("sans aucun modèle du bon niveau, propose quand même le meilleur inférieur", () => {
+    const r = new AutoRouter([{ provider: "gemini", model: "gemini-flash-latest", billing: "free" }], { strategy: "economy" });
+    expect(r.rank({ tier: "deep" })[0]?.model).toBe("gemini-flash-latest");
+  });
+
+  it("un « quota limit: 0 » est traité comme modèle indisponible pour le compte", async () => {
+    const { kindFromStatus } = await import("../src/errors.js");
+    expect(kindFromStatus(429, "Quota exceeded ... limit: 0, model: gemini-3.1-pro")).toBe("model_not_found");
+    expect(kindFromStatus(429, "Too many requests")).toBe("rate_limited");
   });
 
   it("respecte les plafonds : compte désactivé, niveaux autorisés, appels max", () => {

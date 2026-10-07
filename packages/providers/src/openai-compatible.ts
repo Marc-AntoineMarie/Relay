@@ -209,7 +209,7 @@ export function toProviderError(err: unknown, provider: string, model?: string):
     return new ProviderRequestError("network", err.message, provider, model);
   }
   if (err instanceof OpenAI.APIError) {
-    return new ProviderRequestError(kindFromStatus(err.status), err.message, provider, model, err.status);
+    return new ProviderRequestError(kindFromStatus(err.status, err.message), err.message, provider, model, err.status);
   }
   return new ProviderRequestError("unknown", err instanceof Error ? err.message : String(err), provider, model);
 }

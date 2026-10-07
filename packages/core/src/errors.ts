@@ -32,13 +32,14 @@ export class ProviderRequestError extends Error {
   }
 }
 
-/** Classe une erreur HTTP. */
-export function kindFromStatus(status: number | undefined): ErrorKind {
+/** Classe une erreur HTTP (le message affine certains cas ambigus). */
+export function kindFromStatus(status: number | undefined, message = ""): ErrorKind {
   if (status === undefined) return "unknown";
   if (status === 401 || status === 403) return "auth";
   if (status === 404) return "model_not_found";
   if (status === 408) return "timeout";
-  if (status === 429) return "rate_limited";
+  // « quota limit: 0 » : le modèle n'est pas inclus dans l'offre du compte (ex. palier gratuit).
+  if (status === 429) return /limit:\s*0\b/i.test(message) ? "model_not_found" : "rate_limited";
   if (status === 400 || status === 422) return "bad_request";
   if (status >= 500) return "overloaded";
   return "unknown";
@@ -56,7 +57,7 @@ const COPY: Record<ErrorKind, { title: string; hint: string }> = {
   auth: { title: "Clé API refusée", hint: "Vérifie ou remplace la clé de ce backend dans le panneau de gauche." },
   model_not_found: {
     title: "Modèle indisponible",
-    hint: "Ce modèle n'existe pas ou a été retiré pour ton compte : choisis-en un autre dans la liste détectée.",
+    hint: "Ce modèle n'existe pas, a été retiré, ou n'est pas inclus dans ton offre (palier gratuit) : choisis-en un autre.",
   },
   rate_limited: {
     title: "Quota ou débit dépassé",

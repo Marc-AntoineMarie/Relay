@@ -17,6 +17,7 @@ export type {
 export { OpenAICompatibleProvider, buildChatParams, toProviderError } from "./openai-compatible.js";
 export type { OpenAICompatibleOptions, StructuredMode } from "./openai-compatible.js";
 export {
+  autoPoolModels,
   createProvider,
   filterChatModels,
   providerReadiness,

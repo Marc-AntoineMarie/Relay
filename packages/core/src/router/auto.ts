@@ -2,8 +2,10 @@
  * Routage automatique multi-comptes : pour chaque tâche, classe tous les modèles du pool
  * (tous les comptes connectés) selon la stratégie, et explique le choix.
  *
- * Règles dures : jamais de modèle sous-dimensionné (niveau < tier de la tâche), jamais de
- * tâche « web » sans modèle web, modèle retiré/clé refusée écarté, plafonds par compte.
+ * Règles : les modèles du bon niveau passent toujours d'abord ; un modèle de niveau
+ * inférieur n'arrive qu'en dernier recours (signalé), quand aucun n'est disponible ou que
+ * tous ont échoué. Jamais de tâche « web » sans modèle web ; modèle retiré/clé refusée
+ * écarté ; plafonds par compte respectés.
  * Score (plus bas = meilleur) : coût, sur-dimensionnement, besoins non couverts, lenteur,
  * qualité, santé récente — pondérés par la stratégie.
  */
@@ -55,6 +57,8 @@ const LEVEL: Record<RouteTier, number> = { quick: 0, build: 1, deep: 2 };
 const EFFORT: Record<RouteTier, Effort> = { quick: "low", build: "medium", deep: "high" };
 const SPEED = { fast: 0, normal: 0.5, slow: 1 } as const;
 const HEALTH_PENALTY: Record<string, number> = { overloaded: 4, timeout: 4, rate_limited: 6, network: 3 };
+/** Assez grand pour qu'un modèle sous-dimensionné passe après tous ceux du bon niveau. */
+const DEGRADED_PENALTY = 100;
 const HEALTH_LABEL: Record<string, string> = {
   overloaded: "saturé",
   timeout: "lent à répondre",
@@ -111,7 +115,7 @@ export class AutoRouter {
 
       const p = profileModel(entry.model);
       const level = LEVEL[p.level];
-      if (level < required) continue; // jamais sous-dimensionné
+      const degraded = level < required; // dernier recours seulement
       if (needs.includes("web") && !p.tags.includes("web")) continue; // le web ne s'improvise pas
 
       const health = this.opts.health?.status(entry.provider, entry.model);
@@ -128,11 +132,13 @@ export class AutoRouter {
         w.speed * SPEED[p.speed] -
         w.quality * p.quality -
         w.level * level +
-        (health !== undefined ? (HEALTH_PENALTY[health] ?? 2) : 0);
+        (health !== undefined ? (HEALTH_PENALTY[health] ?? 2) : 0) +
+        (degraded ? DEGRADED_PENALTY - 10 * level : 0);
 
       const reason = [
+        degraded ? `⚠ niveau ${p.level}, en dessous de ${task.tier} (dernier recours)` : "",
         entry.billing === "free" ? "gratuit" : entry.billing === "subscription" ? "abonnement" : `~$${price.toFixed(2)}/M`,
-        level === required ? `niveau ${p.level}` : `niveau ${p.level} (au-dessus de ${task.tier})`,
+        degraded ? "" : level === required ? `niveau ${p.level}` : `niveau ${p.level} (au-dessus de ${task.tier})`,
         ...needs.map((n) => `${CAPABILITY_LABEL[n]} ${p.tags.includes(n) ? "✓" : "✗"}`),
         p.speed === "fast" ? "rapide" : "",
         health !== undefined ? `récemment ${HEALTH_LABEL[health] ?? health}` : "",

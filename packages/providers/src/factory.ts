@@ -3,6 +3,7 @@
  * leur facturation, la variable d'environnement de leur clé, et leur politique de
  * modèles : modèle par tier, replis, support de l'effort.
  */
+import { profileModel } from "@relay/core";
 import type { BillingMode, Provider, TierModels } from "@relay/core";
 import { AnthropicProvider } from "./anthropic.js";
 import { ClaudeCodeProvider } from "./claude-code.js";
@@ -107,6 +108,8 @@ export class ProviderError extends Error {
 export interface CreateProviderOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  /** Replis internes au provider. Désactivés en mode auto : le routeur gère (sans descendre de niveau). */
+  fallbacks?: boolean;
 }
 
 /** Instancie le provider nommé. Lève `ProviderError` si inconnu ou clé manquante. */
@@ -135,7 +138,9 @@ export function createProvider(name: string, options: CreateProviderOptions = {}
         billing: preset.billing,
         ...(apiKey !== undefined ? { apiKey } : {}),
         ...(preset.structuredMode !== undefined ? { structuredMode: preset.structuredMode } : {}),
-        ...(preset.fallbackModels !== undefined ? { fallbackModels: preset.fallbackModels } : {}),
+        ...(preset.fallbackModels !== undefined && options.fallbacks !== false
+          ? { fallbackModels: preset.fallbackModels }
+          : {}),
         ...(preset.reasoningEffort !== undefined ? { reasoningEffort: preset.reasoningEffort } : {}),
       });
   }
@@ -181,6 +186,21 @@ export function suggestTierModels(name: string, available: string[]): TierModels
   const build = pick("build") ?? available[0];
   if (build === undefined) return undefined;
   return { quick: pick("quick") ?? build, build, deep: pick("deep") ?? build };
+}
+
+/**
+ * Modèles qu'un compte apporte au pool automatique : la sélection éprouvée du preset
+ * (modèles par tier + replis) quand elle est disponible, sinon les familles connues du
+ * catalogue parmi les modèles détectés (les modèles inconnus restent hors du mode auto).
+ */
+export function autoPoolModels(name: string, detected: string[]): string[] {
+  const preset = PROVIDER_PRESETS[name];
+  const curated = [...new Set([...Object.values(preset?.tierModels ?? {}), ...(preset?.fallbackModels ?? [])])];
+  if (curated.length > 0) {
+    const available = detected.length === 0 ? curated : curated.filter((m) => detected.includes(m));
+    if (available.length > 0) return available;
+  }
+  return detected.filter((m) => profileModel(m).known);
 }
 
 export interface ProviderReadiness {
