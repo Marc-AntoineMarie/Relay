@@ -12,8 +12,8 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join, normalize, extname } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join, normalize, extname, dirname } from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import {
   decompose,
   defaultRegistry,
@@ -31,8 +31,12 @@ import {
 } from "@relay/providers";
 
 const PORT = Number(process.env["RELAY_PORT"] ?? 5174);
-const ENV_PATH = join(process.cwd(), ".env");
-const WEB_DIST = join(process.cwd(), "packages", "web", "dist");
+// Racine du dépôt, résolue depuis l'emplacement de ce fichier (packages/server/dist/)
+// → les chemins sont corrects quel que soit le cwd (CLI, dashboard ou Electron).
+const ROOT_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const ENV_PATH = join(ROOT_DIR, ".env");
+const WEB_DIST = join(ROOT_DIR, "packages", "web", "dist");
+const CONFIG_PATH = join(ROOT_DIR, "relay.config.json");
 
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -88,7 +92,7 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 
 function safeLoadConfig(): RelayConfig | null {
   try {
-    return loadConfig();
+    return loadConfig(CONFIG_PATH);
   } catch {
     return null;
   }
@@ -155,13 +159,13 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
 
   const providerName = body.provider ?? config.decomposer.provider;
   try {
-    const provider = createProvider(providerName, { cwd: process.cwd() });
+    const provider = createProvider(providerName, { cwd: ROOT_DIR });
     sseWrite(res, { type: "backend", name: provider.name, billing: provider.billing });
     sseWrite(res, { type: "decomposing" });
 
     const pipeline = await decompose({
       prompt,
-      context: { cwd: process.cwd() },
+      context: { cwd: ROOT_DIR },
       provider,
       model: config.decomposer,
     });
