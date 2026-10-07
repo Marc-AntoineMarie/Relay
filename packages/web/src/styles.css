@@ -186,3 +186,51 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 }
 .panel { height: 100%; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 .panel-flush { padding: 0; overflow: hidden; }
+
+/* ── phase B : routage auto, comptes, journal ─── */
+.segmented { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 8px; overflow: hidden; align-self: flex-start; flex-wrap: wrap; }
+.segmented button { border: none; border-radius: 0; background: var(--panel-2); color: var(--muted); padding: 5px 11px; font-size: 12px; }
+.segmented button + button { border-left: 1px solid var(--border-strong); }
+.segmented button.on { background: var(--accent); color: #fff; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); }
+
+.accounts, .decisions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.account { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; display: flex; flex-direction: column; gap: 4px; background: var(--panel-2); }
+.account-off { opacity: 0.55; }
+.account-head { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; }
+.account-policy { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.level-chip { padding: 1px 8px; font-size: 10px; border-radius: 999px; text-transform: uppercase; font-weight: 700; }
+.level-chip.off { background: none; border: 1px dashed var(--border-strong); color: var(--muted); }
+.max-calls { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; }
+.max-calls input { width: 52px; padding: 2px 6px; }
+
+.decisions li { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: center; padding: 6px 8px; border-radius: 8px; background: var(--panel-2); cursor: pointer; font-size: 12px; }
+.decisions li:hover { background: var(--raise); }
+.decision-main { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.decision-why { grid-column: 2; }
+
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip { font-size: 10px; padding: 1px 7px; border-radius: 999px; background: var(--raise); color: var(--muted); }
+.chip-code { color: var(--blue); }
+.chip-reasoning { color: var(--accent-2); }
+.chip-long_context { color: var(--amber); }
+.chip-web { color: var(--green); }
+.chip-fast { color: var(--text); }
+
+.journal { display: flex; flex-direction: column; }
+.journal-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.journal-tools select, .journal-search { padding: 4px 8px; font-size: 12px; }
+.journal-search { width: 150px; }
+.raw-toggle { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.log-list { list-style: none; margin: 0; padding: 4px 0; overflow: auto; flex: 1; min-height: 0; font: 12px/1.45 var(--mono); }
+.log-line { width: 100%; display: flex; align-items: baseline; gap: 8px; background: none; border: none; border-radius: 0; padding: 3px 10px; text-align: left; color: var(--text); font: inherit; }
+.log-line:hover:not(:disabled) { background: var(--raise); }
+.log-line:disabled { opacity: 1; cursor: default; }
+.log-time { color: var(--muted); flex: none; }
+.log-icon { flex: none; width: 16px; text-align: center; }
+.log-title { flex: 1; min-width: 0; word-break: break-word; }
+.log-more { color: var(--muted); flex: none; }
+.log-warn .log-title { color: var(--amber); }
+.log-error .log-title { color: var(--red); }
+.log-detail { margin: 2px 10px 8px 34px; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; color: var(--muted); }

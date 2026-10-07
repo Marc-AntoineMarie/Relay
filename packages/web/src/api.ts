@@ -1,4 +1,26 @@
-import type { AppState, ModelsResponse, ProviderReadiness, ServerEvent, TierModels } from "./types";
+import type {
+  AccountPolicy,
+  AppState,
+  ModelsResponse,
+  PoolResponse,
+  ProviderReadiness,
+  ServerEvent,
+  Strategy,
+  TierModels,
+} from "./types";
+
+export type RunBody =
+  | { mode: "auto"; prompt: string; strategy: Strategy; policies: Record<string, AccountPolicy> }
+  | { mode: "manual"; prompt: string; provider: string; models: TierModels };
+
+export async function getPool(): Promise<PoolResponse | null> {
+  try {
+    const res = await fetch("/api/pool");
+    return (await res.json()) as PoolResponse;
+  } catch {
+    return null;
+  }
+}
 
 export async function getState(): Promise<AppState> {
   const res = await fetch("/api/state");
@@ -31,10 +53,7 @@ export async function setKey(provider: string, value: string): Promise<ProviderR
 }
 
 /** Lance un pipeline et yield les événements SSE au fil de l'eau. `signal` l'interrompt. */
-export async function* runPipeline(
-  body: { prompt: string; provider: string; models: TierModels },
-  signal: AbortSignal,
-): AsyncGenerator<ServerEvent> {
+export async function* runPipeline(body: RunBody, signal: AbortSignal): AsyncGenerator<ServerEvent> {
   const res = await fetch("/api/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

@@ -99,7 +99,8 @@ function PipelineView({ views, selectedId, onSelect, layout }: DagProps & { layo
             </div>
             <div className="node-desc">{v.task.description}</div>
             <div className="node-foot">
-              <span className="node-model">
+              <span className="node-model" title={v.provider !== undefined ? `${v.provider} · ${v.model ?? ""}` : undefined}>
+                {v.provider !== undefined ? `${v.provider} · ` : ""}
                 {v.model ?? "—"}
                 {v.fallbackFrom !== undefined ? " ↺" : ""}
               </span>

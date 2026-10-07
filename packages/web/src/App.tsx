@@ -8,7 +8,15 @@ import { useRef } from "react";
 import { DockviewReact, themeDark, type DockviewApi, type DockviewReadyEvent } from "dockview-react";
 import "dockview-react/dist/styles/dockview.css";
 import { ErrorCard } from "./components";
-import { AccountsPanel, ComposerPanel, DetailPanel, MetricsPanel, PipelinePanel, RoutingPanel } from "./panels";
+import {
+  AccountsPanel,
+  ComposerPanel,
+  DetailPanel,
+  JournalPanel,
+  MetricsPanel,
+  PipelinePanel,
+  RoutingPanel,
+} from "./panels";
 import { BILLING, load, RelayProvider, save, useRelay } from "./store";
 
 const PANELS = {
@@ -18,10 +26,11 @@ const PANELS = {
   pipeline: PipelinePanel,
   detail: DetailPanel,
   metrics: MetricsPanel,
+  journal: JournalPanel,
 };
 
 /** Incrémenter si la liste des panneaux change (invalide les dispositions mémorisées). */
-const LAYOUT_KEY = "relay.layout.v1";
+const LAYOUT_KEY = "relay.layout.v2";
 
 function defaultLayout(api: DockviewApi): void {
   api.clear();
@@ -51,15 +60,23 @@ function defaultLayout(api: DockviewApi): void {
     position: { referencePanel: "routing", direction: "below" },
   });
   api.addPanel({
+    id: "journal",
+    component: "journal",
+    title: "Journal",
+    position: { referencePanel: "pipeline", direction: "below" },
+  });
+  api.addPanel({
     id: "metrics",
     component: "metrics",
     title: "Coûts",
-    position: { referencePanel: "pipeline", direction: "below" },
+    position: { referencePanel: "journal", direction: "within" },
+    inactive: true,
   });
-  api.getPanel("accounts")?.group.api.setSize({ width: 280 });
-  api.getPanel("routing")?.group.api.setSize({ width: 380 });
-  api.getPanel("composer")?.group.api.setSize({ height: 170 });
-  api.getPanel("metrics")?.group.api.setSize({ height: 140 });
+  api.getPanel("accounts")?.group.api.setSize({ width: 270 });
+  api.getPanel("routing")?.group.api.setSize({ width: 400 });
+  api.getPanel("composer")?.group.api.setSize({ height: 160 });
+  api.getPanel("journal")?.group.api.setSize({ height: 240 });
+  api.getPanel("detail")?.group.api.setSize({ height: 300 });
 }
 
 export default function App(): React.JSX.Element {
@@ -105,9 +122,13 @@ function Shell(): React.JSX.Element {
         </div>
         <div className="subtitle">orchestrateur de pipeline agentique</div>
         <div className="topbar-right">
-          {r.selected !== undefined ? (
+          {r.mode === "auto" ? (
+            <span className="pill billing-free">
+              Auto · {r.usableAccounts.length} compte(s) · {r.usableAccounts.reduce((n, a) => n + a.models.length, 0)} modèles
+            </span>
+          ) : r.selected !== undefined ? (
             <span className={`pill billing-${r.selected.billing}`}>
-              {r.selected.label} · {BILLING[r.selected.billing]}
+              Manuel · {r.selected.label} · {BILLING[r.selected.billing]}
             </span>
           ) : null}
           <button className="ghost-btn" onClick={resetLayout} title="Remettre les panneaux à leur place">

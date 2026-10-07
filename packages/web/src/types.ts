@@ -32,16 +32,66 @@ export interface ModelsResponse {
   error?: ErrorDescription;
 }
 
+export type Mode = "auto" | "manual";
+export type Strategy = "economy" | "balanced" | "quality";
+export type Capability = "code" | "reasoning" | "long_context" | "web" | "fast";
+
+export interface AccountPolicy {
+  enabled: boolean;
+  levels?: Tier[];
+  maxCallsPerRun?: number;
+}
+
+export interface PoolModel {
+  model: string;
+  level: Tier;
+  tags: Capability[];
+  family: string;
+  inputPerM: number;
+  outputPerM: number;
+  health?: string;
+}
+
+export interface PoolAccount {
+  name: string;
+  label: string;
+  billing: Billing;
+  models: PoolModel[];
+  error?: ErrorDescription;
+}
+
+export interface PoolResponse {
+  accounts: PoolAccount[];
+  defaultPolicies: Record<string, AccountPolicy>;
+}
+
+export interface LogEntry {
+  at: number;
+  level: "info" | "warn" | "error";
+  category: "plan" | "route" | "request" | "response" | "fallback" | "error" | "info";
+  taskId?: string;
+  title: string;
+  detail?: string;
+}
+
+export interface RouteAlternative {
+  provider: string;
+  model: string;
+  reason: string;
+}
+
 export interface Task {
   id: string;
   type: string;
   tier: Tier;
+  needs?: Capability[];
   description: string;
   dependsOn: string[];
 }
 
 export interface TaskMetrics {
   model: string;
+  provider: string;
   fallbackFrom?: string;
   billedCost: number;
   referenceCost: number;
@@ -63,12 +113,22 @@ export interface PipelineMetrics {
 }
 
 export type ServerEvent =
-  | { type: "backend"; name: string; billing: Billing }
-  | { type: "decomposing" }
+  | { type: "mode"; mode: Mode; strategy?: Strategy; accounts: string[]; poolSize?: number }
+  | { type: "decomposing"; provider?: string; model?: string }
   | { type: "routes"; routes: Record<string, { model: string; effort?: string }> }
+  | { type: "log"; entry: LogEntry }
   | { type: "pipeline:start" }
   | { type: "pipeline:plan"; tasks: Task[] }
-  | { type: "task:start"; taskId: string; model: string; effort?: string }
+  | {
+      type: "task:route";
+      taskId: string;
+      provider: string;
+      model: string;
+      effort?: string;
+      reason: string;
+      alternatives: RouteAlternative[];
+    }
+  | { type: "task:start"; taskId: string; model: string; provider?: string; effort?: string }
   | { type: "task:chunk"; taskId: string; text: string }
   | {
       type: "task:done";
@@ -88,6 +148,9 @@ export interface TaskView {
   task: Task;
   status: TaskStatus;
   output: string;
+  provider?: string;
+  reason?: string;
+  alternatives?: RouteAlternative[];
   model?: string;
   fallbackFrom?: string;
   summary?: string;

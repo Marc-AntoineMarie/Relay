@@ -1,4 +1,59 @@
-import { TIERS, type ErrorDescription, type PipelineMetrics, type TaskView, type Tier, type TierModels } from "./types";
+import {
+  TIERS,
+  type Capability,
+  type ErrorDescription,
+  type PipelineMetrics,
+  type TaskView,
+  type Tier,
+  type TierModels,
+} from "./types";
+
+export const CAP_LABEL: Record<Capability, string> = {
+  code: "code",
+  reasoning: "raisonnement",
+  long_context: "long contexte",
+  web: "web",
+  fast: "rapide",
+};
+
+export function NeedsChips({ needs }: { needs: Capability[] | undefined }): React.JSX.Element | null {
+  if (needs === undefined || needs.length === 0) return null;
+  return (
+    <span className="chips">
+      {needs.map((n) => (
+        <span key={n} className={`chip chip-${n}`}>
+          {CAP_LABEL[n]}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** Choix exclusif compact (mode, stratégie…). */
+export function Segmented<T extends string>(props: {
+  value: T;
+  options: Array<{ value: T; label: string; hint?: string }>;
+  disabled?: boolean;
+  onChange: (v: T) => void;
+}): React.JSX.Element {
+  return (
+    <div className="segmented" role="radiogroup">
+      {props.options.map((o) => (
+        <button
+          key={o.value}
+          role="radio"
+          aria-checked={props.value === o.value}
+          className={props.value === o.value ? "on" : ""}
+          disabled={props.disabled}
+          title={o.hint}
+          onClick={() => props.onChange(o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 const TIER_INFO: Record<Tier, { label: string; hint: string }> = {
   quick: { label: "Quick", hint: "tâches mécaniques" },
@@ -127,12 +182,26 @@ export function TaskDetail({ view }: { view: TaskView | undefined }): React.JSX.
         <span className={`status status-${view.status}`}>{STATUS_LABEL[view.status]}</span>
       </div>
       <h3 className="detail-title">{view.task.description}</h3>
+      <NeedsChips needs={view.task.needs} />
       <dl className="kv">
         <dt>Modèle</dt>
         <dd>
+          {view.provider !== undefined ? `${view.provider} · ` : ""}
           {view.model ?? "—"}
           {view.fallbackFrom !== undefined ? <span className="badge warn">repli (au lieu de {view.fallbackFrom})</span> : null}
         </dd>
+        {view.reason !== undefined ? (
+          <>
+            <dt>Pourquoi</dt>
+            <dd>{view.reason}</dd>
+          </>
+        ) : null}
+        {view.alternatives !== undefined && view.alternatives.length > 0 ? (
+          <>
+            <dt>Replis prévus</dt>
+            <dd>{view.alternatives.map((a) => `${a.provider} · ${a.model}`).join("  →  ")}</dd>
+          </>
+        ) : null}
         {m !== undefined ? (
           <>
             <dt>Coût</dt>

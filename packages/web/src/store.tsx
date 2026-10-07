@@ -3,17 +3,25 @@
  * (les panneaux sont rendus par dockview, chacun dans son propre conteneur).
  */
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { getModels, getState, runPipeline, setKey } from "./api";
+import { getModels, getPool, getState, runPipeline, setKey, type RunBody } from "./api";
 import {
   TIERS,
+  type AccountPolicy,
   type AppState,
   type ErrorDescription,
+  type LogEntry,
+  type Mode,
   type Phase,
   type PipelineMetrics,
+  type PoolResponse,
   type ProviderReadiness,
+  type Strategy,
   type TaskView,
   type TierModels,
 } from "./types";
+
+/** Taille max du journal gardé en mémoire (les runs très longs restent fluides). */
+const MAX_LOGS = 3000;
 
 // Préférences locales (backend, modèles, disposition) — confort uniquement.
 export const load = <T,>(key: string): T | null => {
@@ -69,6 +77,14 @@ function useRelayState() {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
   const abortRef = useRef<AbortController | null>(null);
+  const [mode, setModeState] = useState<Mode>(() => load<Mode>("relay.mode") ?? "auto");
+  const [strategy, setStrategyState] = useState<Strategy>(() => load<Strategy>("relay.strategy") ?? "balanced");
+  const [savedPolicies, setSavedPolicies] = useState<Record<string, AccountPolicy>>(
+    () => load<Record<string, AccountPolicy>>("relay.policies") ?? {},
+  );
+  const [pool, setPool] = useState<PoolResponse | null>(null);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [runInfo, setRunInfo] = useState<{ mode: Mode; accounts: string[]; strategy?: Strategy } | null>(null);
 
   const busy = phase === "planning" || phase === "running";
   const selected = useMemo(() => state?.providers.find((p) => p.name === provider), [state, provider]);
@@ -120,6 +136,18 @@ function useRelayState() {
     };
   }, [provider, selected?.ready, selected?.tierModels]);
 
+  // Pool du mode auto : rechargé quand l'état des comptes change (clé ajoutée…).
+  useEffect(() => {
+    if (state === null) return;
+    let cancelled = false;
+    void getPool().then((p) => {
+      if (!cancelled && p !== null) setPool(p);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [state]);
+
   // Chrono pendant l'exécution : montre que ça tourne.
   useEffect(() => {
     if (!busy) return;
@@ -159,26 +187,76 @@ function useRelayState() {
   const patch = (id: string, update: (v: TaskView) => Partial<TaskView>): void =>
     setViews((vs) => vs.map((v) => (v.task.id === id ? { ...v, ...update(v) } : v)));
 
+  // Plafonds effectifs : défauts du moteur, surchargés par les choix de l'utilisateur.
+  const policies: Record<string, AccountPolicy> = { ...pool?.defaultPolicies, ...savedPolicies };
+  const policyOf = (name: string): AccountPolicy => policies[name] ?? { enabled: true };
+  const usableAccounts =
+    pool?.accounts.filter((a) => a.models.length > 0 && policyOf(a.name).enabled) ?? [];
+
+  function setMode(next: Mode): void {
+    if (busy) return;
+    setModeState(next);
+    save("relay.mode", next);
+  }
+
+  function setStrategy(next: Strategy): void {
+    setStrategyState(next);
+    save("relay.strategy", next);
+  }
+
+  function setPolicy(name: string, next: AccountPolicy): void {
+    setSavedPolicies((p) => {
+      const updated = { ...p, [name]: next };
+      save("relay.policies", updated);
+      return updated;
+    });
+  }
+
+  const pushLog = (entry: LogEntry): void =>
+    setLogs((ls) => (ls.length >= MAX_LOGS ? [...ls.slice(-MAX_LOGS + 1), entry] : [...ls, entry]));
+
   async function run(): Promise<void> {
-    if (tiers === null) return;
+    let body: RunBody;
+    if (mode === "auto") {
+      body = { mode: "auto", prompt, strategy, policies };
+    } else {
+      if (tiers === null) return;
+      body = { mode: "manual", prompt, provider, models: tiers };
+    }
     const ac = new AbortController();
     abortRef.current = ac;
     setPhase("planning");
     setError(null);
     setMetrics(null);
     setViews([]);
+    setLogs([]);
+    setRunInfo(null);
     setSelectedId(null);
     setStartedAt(Date.now());
 
     try {
-      for await (const ev of runPipeline({ prompt, provider, models: tiers }, ac.signal)) {
+      for await (const ev of runPipeline(body, ac.signal)) {
         switch (ev.type) {
+          case "mode":
+            setRunInfo({ mode: ev.mode, accounts: ev.accounts, ...(ev.strategy ? { strategy: ev.strategy } : {}) });
+            break;
+          case "log":
+            pushLog(ev.entry);
+            break;
           case "pipeline:plan":
             setPhase("running");
             setViews(ev.tasks.map((task) => ({ task, status: "pending", output: "" })));
             break;
+          case "task:route":
+            patch(ev.taskId, () => ({
+              provider: ev.provider,
+              model: ev.model,
+              reason: ev.reason,
+              alternatives: ev.alternatives,
+            }));
+            break;
           case "task:start":
-            patch(ev.taskId, () => ({ status: "running", model: ev.model }));
+            patch(ev.taskId, () => ({ status: "running", model: ev.model, ...(ev.provider ? { provider: ev.provider } : {}) }));
             setSelectedId(ev.taskId);
             break;
           case "task:chunk":
@@ -191,6 +269,7 @@ function useRelayState() {
               output: ev.result.data?.result ?? v.output,
               metrics: ev.metrics,
               model: ev.metrics.model,
+              provider: ev.metrics.provider,
               ...(ev.metrics.fallbackFrom !== undefined ? { fallbackFrom: ev.metrics.fallbackFrom } : {}),
               ...(ev.result.data?.truncated === true ? { truncated: true } : {}),
             }));
@@ -259,7 +338,20 @@ function useRelayState() {
     elapsed: startedAt !== null ? Math.max(0, Math.round((now - startedAt) / 1000)) : 0,
     doneCount: views.filter((v) => v.status === "done").length,
     tiersComplete,
-    canRun: !busy && prompt.trim().length > 0 && selected?.ready === true && tiersComplete,
+    canRun:
+      !busy &&
+      prompt.trim().length > 0 &&
+      (mode === "auto" ? usableAccounts.length > 0 : selected?.ready === true && tiersComplete),
+    mode,
+    setMode,
+    strategy,
+    setStrategy,
+    pool,
+    policyOf,
+    setPolicy,
+    usableAccounts,
+    logs,
+    runInfo,
     isRecommended:
       tiers !== null && catalog.suggested !== null && TIERS.every((t) => tiers[t] === catalog.suggested?.[t]),
     chooseProvider,
