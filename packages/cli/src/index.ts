@@ -14,28 +14,8 @@ import {
   type PipelineEvent,
   type PipelineMetrics,
   type Provider,
-  type RelayConfig,
 } from "@relay/core";
-import {
-  AnthropicProvider,
-  ClaudeCodeProvider,
-  OpenAICompatibleProvider,
-  PROVIDERS_VERSION,
-  type StructuredMode,
-} from "@relay/providers";
-import type { BillingMode } from "@relay/core";
-
-/** Backends compatibles OpenAI : un seul adaptateur, plusieurs fournisseurs. */
-const OPENAI_COMPAT: Record<
-  string,
-  { baseURL: string; envKey?: string; billing: BillingMode; structuredMode?: StructuredMode }
-> = {
-  gemini: { baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/", envKey: "GEMINI_API_KEY", billing: "free" },
-  groq: { baseURL: "https://api.groq.com/openai/v1", envKey: "GROQ_API_KEY", billing: "free" },
-  openrouter: { baseURL: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY", billing: "per-token" },
-  deepseek: { baseURL: "https://api.deepseek.com", envKey: "DEEPSEEK_API_KEY", billing: "per-token" },
-  ollama: { baseURL: "http://localhost:11434/v1", billing: "free" },
-};
+import { createProvider, PROVIDER_PRESETS, ProviderError, PROVIDERS_VERSION } from "@relay/providers";
 
 const HELP = `relay — orchestrateur de pipeline agentique
 
@@ -56,48 +36,6 @@ Backends (--provider) :
 
 --model <id>   force un modèle unique (requis pour les backends non-Claude)
 Config : relay.config.json (routes par défaut).`;
-
-/** Instancie le provider choisi. Lève une erreur lisible si indisponible. */
-function makeProvider(name: string, config: RelayConfig): Provider {
-  switch (name) {
-    case "anthropic": {
-      const apiKey = config.providers["anthropic"]?.apiKey?.trim() || process.env["ANTHROPIC_API_KEY"];
-      if (!apiKey) {
-        throw new ConfigError(
-          "ANTHROPIC_API_KEY manquante. Copie .env.example en .env, ou utilise --provider claude-code.",
-        );
-      }
-      return new AnthropicProvider({ apiKey });
-    }
-    case "claude-code":
-      // Abonnement : aucune clé. permissionMode "none" => pas d'effet de bord disque en v0.1.
-      return new ClaudeCodeProvider({ cwd: process.cwd(), permissionMode: "none" });
-    default: {
-      const preset = OPENAI_COMPAT[name];
-      if (preset === undefined) {
-        throw new ConfigError(
-          `provider inconnu : ${name} (anthropic | claude-code | ${Object.keys(OPENAI_COMPAT).join(" | ")})`,
-        );
-      }
-      const apiKey = preset.envKey ? process.env[preset.envKey] : undefined;
-      if (preset.envKey && !apiKey) {
-        throw new ConfigError(
-          `${preset.envKey} manquante pour --provider ${name}. Mets-la dans .env (clé gratuite à créer chez le fournisseur).`,
-        );
-      }
-      const opts: {
-        name: string;
-        baseURL: string;
-        billing: BillingMode;
-        apiKey?: string;
-        structuredMode?: StructuredMode;
-      } = { name, baseURL: preset.baseURL, billing: preset.billing };
-      if (apiKey !== undefined) opts.apiKey = apiKey;
-      if (preset.structuredMode !== undefined) opts.structuredMode = preset.structuredMode;
-      return new OpenAICompatibleProvider(opts);
-    }
-  }
-}
 
 async function main(argv: string[]): Promise<number> {
   const args = argv.slice(2);
@@ -154,7 +92,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const chosenProvider = providerName ?? config.decomposer.provider;
-  if (chosenProvider !== "anthropic" && chosenProvider !== "claude-code" && modelOverride === undefined) {
+  if (PROVIDER_PRESETS[chosenProvider]?.needsModelOverride === true && modelOverride === undefined) {
     console.error(
       `Avec --provider ${chosenProvider}, précise aussi --model <id> (ex. gemini-2.0-flash), ` +
         `car les modèles par défaut sont des modèles Claude.`,
@@ -164,9 +102,9 @@ async function main(argv: string[]): Promise<number> {
 
   let provider: Provider;
   try {
-    provider = makeProvider(chosenProvider, config);
+    provider = createProvider(chosenProvider, { cwd: process.cwd() });
   } catch (err) {
-    if (err instanceof ConfigError) {
+    if (err instanceof ProviderError) {
       console.error(err.message);
       return 1;
     }

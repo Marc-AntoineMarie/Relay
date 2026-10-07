@@ -6,7 +6,20 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/), versions 
 [SemVer](https://semver.org/lang/fr/). **Ce fichier est mis à jour à chaque changement**,
 en même temps que le commit correspondant (un bloc par commit, le plus récent en haut).
 
-## [Non publié] — v0.1.0 en cours
+## [Non publié] — v0.1.0 en cours (+ début dashboard v0.3)
+
+### (ce commit) — feat: serveur local + fabrique de providers partagée
+
+- **`providers/factory.ts`** : `createProvider(name)`, `PROVIDER_PRESETS` (anthropic,
+  claude-code, gemini, groq, openrouter, deepseek, ollama) et `providerReadiness()`
+  (quels backends sont prêts). Mutualise la logique entre CLI et serveur.
+- **`packages/server`** : serveur local Node (127.0.0.1) exposant le moteur à l'UI —
+  `GET /api/state`, `POST /api/keys` (écrit `.env` côté machine), `POST /api/run` (SSE).
+  Sert l'app web buildée si présente. Les clés ne quittent jamais la machine.
+- **CLI** : utilise la fabrique partagée (suppression de la duplication des presets).
+
+---
+
 
 Proof of concept CLI : un prompt → décomposition → routing → exécution → métriques.
 Multi-backend : API Anthropic, Claude Code (abonnement), et tous les backends compatibles

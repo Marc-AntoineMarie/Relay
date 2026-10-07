@@ -16,3 +16,5 @@ export type {
 } from "./claude-code.js";
 export { OpenAICompatibleProvider, buildChatParams } from "./openai-compatible.js";
 export type { OpenAICompatibleOptions, StructuredMode } from "./openai-compatible.js";
+export { createProvider, providerReadiness, ProviderError, PROVIDER_PRESETS } from "./factory.js";
+export type { ProviderPreset, CreateProviderOptions, ProviderReadiness } from "./factory.js";

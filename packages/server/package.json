@@ -1,0 +1,16 @@
+{
+  "name": "@relay/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "relay-server": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@relay/core": "workspace:*",
+    "@relay/providers": "workspace:*"
+  }
+}
