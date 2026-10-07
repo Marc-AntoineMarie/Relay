@@ -187,10 +187,21 @@ export type CompletionChunk =
   | { type: "tool_use"; toolUse: { name: string; input: unknown } }
   | { type: "usage"; usage: Usage };
 
+/**
+ * Mode de facturation d'un provider — permet de comparer des backends hétérogènes.
+ * - `per-token` : facturé au token (API avec clé) → coût réel = coût de référence.
+ * - `subscription` : forfait (ex. Claude Code sur abonnement) → coût réel = 0.
+ * - `free` : gratuit (ex. Ollama local) → coût réel = 0.
+ */
+export type BillingMode = "per-token" | "subscription" | "free";
+
 export interface Provider {
   name: string;
+  /** Comment ce provider facture (pour distinguer coût réel et coût de référence). */
+  billing: BillingMode;
   models(): Promise<ModelInfo[]>;
   complete(request: CompletionRequest): AsyncIterable<CompletionChunk>;
+  /** Coût de référence ($ au tarif API du modèle) pour un volume de tokens. */
   estimateCost(model: string, inputTokens: number, outputTokens: number): number;
   countTokens(request: CompletionRequest): Promise<number>;
 }
@@ -231,7 +242,10 @@ export interface TaskMetrics {
   inputTokens: number;
   outputTokens: number;
   thinkingTokens: number;
-  cost: number;
+  /** Coût au tarif API du modèle ($) — échelle commune, calculable pour tout provider. */
+  referenceCost: number;
+  /** Coût réellement facturé ($) — 0 sur abonnement/local. */
+  billedCost: number;
   durationMs: number;
   success: boolean;
   escalated: boolean;
@@ -239,7 +253,10 @@ export interface TaskMetrics {
 
 export interface PipelineMetrics {
   pipelineId: string;
-  totalCost: number;
+  /** Somme des coûts réellement facturés ($) — souvent 0 sur abonnement/local. */
+  totalBilledCost: number;
+  /** Somme des coûts de référence ($ équivalent API) — base de comparaison honnête. */
+  totalReferenceCost: number;
   totalTokens: number;
   totalDurationMs: number;
   taskCount: number;
@@ -253,7 +270,7 @@ export interface PipelineMetrics {
    * « un seul appel Opus sur le prompt entier » vs le coût réel du pipeline.
    */
   baselineCost: number;
-  /** Économie en pourcentage vs `baselineCost`. */
+  /** Économie de routage en % : (baselineCost − totalReferenceCost) / baselineCost. */
   savings: number;
   costPerTask: TaskMetrics[];
 }

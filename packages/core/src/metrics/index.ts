@@ -21,20 +21,23 @@ export function computePipelineMetrics(input: PipelineMetricsInput): PipelineMet
   const registry = input.registry ?? defaultRegistry;
   const { taskMetrics } = input;
 
-  const totalCost = sum(taskMetrics.map((m) => m.cost));
+  const totalBilledCost = sum(taskMetrics.map((m) => m.billedCost));
+  const totalReferenceCost = sum(taskMetrics.map((m) => m.referenceCost));
   const totalTokens = sum(taskMetrics.map((m) => m.inputTokens + m.outputTokens));
   const totalDurationMs = sum(taskMetrics.map((m) => m.durationMs));
   const successCount = taskMetrics.filter((m) => m.success).length;
   const escalationCount = taskMetrics.filter((m) => m.escalated).length;
 
+  // Baseline : tout au tarif de référence du modèle `deep`. Comparable à totalReferenceCost.
   const baselineCost = sum(
     taskMetrics.map((m) => registry.estimateCost(input.baselineModel, m.inputTokens, m.outputTokens)),
   );
-  const savings = baselineCost > 0 ? ((baselineCost - totalCost) / baselineCost) * 100 : 0;
+  const savings = baselineCost > 0 ? ((baselineCost - totalReferenceCost) / baselineCost) * 100 : 0;
 
   return {
     pipelineId: input.pipelineId,
-    totalCost,
+    totalBilledCost,
+    totalReferenceCost,
     totalTokens,
     totalDurationMs,
     taskCount: taskMetrics.length,

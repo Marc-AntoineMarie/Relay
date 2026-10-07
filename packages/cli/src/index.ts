@@ -114,8 +114,11 @@ function renderEvent(event: PipelineEvent): string | undefined {
   switch (event.type) {
     case "task:start":
       return `  ▶ [${event.taskId}] ${event.model}${event.effort ? ` (${event.effort})` : ""}`;
-    case "task:done":
-      return `  ✓ [${event.taskId}] ${event.result.summary}  —  ${money(event.metrics.cost)}, ${event.metrics.inputTokens + event.metrics.outputTokens} tok, ${event.metrics.durationMs} ms`;
+    case "task:done": {
+      const m = event.metrics;
+      const cost = m.billedCost > 0 ? money(m.billedCost) : `${money(m.referenceCost)} équiv.`;
+      return `  ✓ [${event.taskId}] ${event.result.summary}  —  ${cost}, ${m.inputTokens + m.outputTokens} tok, ${m.durationMs} ms`;
+    }
     case "task:failed":
       return `  ✗ [${event.taskId}] ${event.error}`;
     case "pipeline:failed":
@@ -127,9 +130,14 @@ function renderEvent(event: PipelineEvent): string | undefined {
 
 function printMetrics(m: PipelineMetrics): void {
   console.log(`\n📊 Métriques`);
-  console.log(`  Coût total        ${money(m.totalCost)}`);
+  console.log(`  Payé (facturé)    ${money(m.totalBilledCost)}`);
+  console.log(`  Équivalent API    ${money(m.totalReferenceCost)}`);
   console.log(`  Baseline (deep)   ${money(m.baselineCost)}`);
-  console.log(`  Économies         ${m.savings.toFixed(1)} %`);
+  console.log(`  Économies routage ${m.savings.toFixed(1)} %  (vs tout sur deep)`);
+  if (m.totalReferenceCost > m.totalBilledCost) {
+    const vsRef = m.totalReferenceCost > 0 ? ((m.totalReferenceCost - m.totalBilledCost) / m.totalReferenceCost) * 100 : 0;
+    console.log(`  Gain facturation  ${vsRef.toFixed(1)} %  (abonnement/local vs API)`);
+  }
   console.log(`  Tokens            ${m.totalTokens}`);
   console.log(`  Durée             ${m.totalDurationMs} ms`);
   console.log(`  Tâches            ${m.successCount}/${m.taskCount} réussies`);

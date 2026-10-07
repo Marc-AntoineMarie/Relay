@@ -24,6 +24,7 @@ export interface AnthropicProviderOptions {
 
 export class AnthropicProvider implements Provider {
   readonly name = "anthropic";
+  readonly billing = "per-token" as const;
   private readonly client: Anthropic;
   private readonly registry: ModelRegistry;
 

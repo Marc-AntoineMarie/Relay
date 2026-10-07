@@ -22,6 +22,7 @@ function config(): RelayConfig {
 function okProvider(): Provider {
   return {
     name: "anthropic",
+    billing: "per-token",
     async models() {
       return [];
     },
@@ -82,9 +83,11 @@ describe("execute", () => {
 
     expect(done.metrics.taskCount).toBe(2);
     expect(done.metrics.successCount).toBe(2);
-    expect(done.metrics.totalCost).toBeGreaterThan(0);
+    expect(done.metrics.totalReferenceCost).toBeGreaterThan(0);
+    // API per-token ⇒ coût facturé = coût de référence.
+    expect(done.metrics.totalBilledCost).toBeCloseTo(done.metrics.totalReferenceCost, 10);
     // Baseline = tout sur Opus (deep) ⇒ plus cher que Haiku+Sonnet ⇒ économies > 0.
-    expect(done.metrics.baselineCost).toBeGreaterThan(done.metrics.totalCost);
+    expect(done.metrics.baselineCost).toBeGreaterThan(done.metrics.totalReferenceCost);
     expect(done.metrics.savings).toBeGreaterThan(0);
 
     expect(p.tasks[0]?.assignedModel).toBe("claude-haiku-4-5");
@@ -112,10 +115,11 @@ describe("execute", () => {
 describe("computePipelineMetrics", () => {
   it("additionne coûts/tokens et calcule la baseline + économies", () => {
     const tm: TaskMetrics[] = [
-      { taskId: "1", model: "claude-haiku-4-5", provider: "anthropic", tier: "quick", inputTokens: 1_000_000, outputTokens: 1_000_000, thinkingTokens: 0, cost: 6, durationMs: 10, success: true, escalated: false },
+      { taskId: "1", model: "claude-haiku-4-5", provider: "anthropic", tier: "quick", inputTokens: 1_000_000, outputTokens: 1_000_000, thinkingTokens: 0, referenceCost: 6, billedCost: 6, durationMs: 10, success: true, escalated: false },
     ];
     const m = computePipelineMetrics({ pipelineId: "p", taskMetrics: tm, baselineModel: "claude-opus-5-5" });
-    expect(m.totalCost).toBe(6);
+    expect(m.totalBilledCost).toBe(6);
+    expect(m.totalReferenceCost).toBe(6);
     expect(m.totalTokens).toBe(2_000_000);
     // Baseline Opus : 1M×4 + 1M×20 = 24 $.
     expect(m.baselineCost).toBeCloseTo(24, 6);

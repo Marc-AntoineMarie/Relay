@@ -11,6 +11,7 @@ import type { CompletionRequest, ModelAssignment, Provider, ProjectContext } fro
 function mockProvider(responseText: string, capture?: (req: CompletionRequest) => void): Provider {
   return {
     name: "mock",
+    billing: "per-token",
     async models() {
       return [];
     },

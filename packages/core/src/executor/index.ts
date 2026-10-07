@@ -127,6 +127,7 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
 
     const durationMs = Date.now() - started;
     const output: TaskIO = { summary: firstLine(result.text), data: { result: result.text } };
+    const referenceCost = provider.estimateCost(model, result.inputTokens, result.outputTokens);
     const metrics: TaskMetrics = {
       taskId: task.id,
       model,
@@ -136,7 +137,8 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
       thinkingTokens: result.thinkingTokens,
-      cost: provider.estimateCost(model, result.inputTokens, result.outputTokens),
+      referenceCost,
+      billedCost: provider.billing === "per-token" ? referenceCost : 0,
       durationMs,
       success: true,
       escalated: false,
@@ -241,7 +243,8 @@ function failMetrics(task: Task, model: string, providerName: string, started: n
     inputTokens: 0,
     outputTokens: 0,
     thinkingTokens: 0,
-    cost: 0,
+    referenceCost: 0,
+    billedCost: 0,
     durationMs: Date.now() - started,
     success: false,
     escalated: false,
