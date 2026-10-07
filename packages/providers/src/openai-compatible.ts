@@ -25,6 +25,8 @@ export interface OpenAICompatibleOptions {
   /** Défaut : "json_object" (le plus portable). */
   structuredMode?: StructuredMode;
   registry?: ModelRegistry;
+  /** Timeout par requête (ms). Défaut 60 s : évite de pendre si un backend gratuit sature. */
+  timeoutMs?: number;
 }
 
 export class OpenAICompatibleProvider implements Provider {
@@ -40,7 +42,12 @@ export class OpenAICompatibleProvider implements Provider {
     this.structuredMode = options.structuredMode ?? "json_object";
     this.registry = options.registry ?? defaultRegistry;
     // Certains backends locaux (Ollama) n'exigent pas de clé : l'SDK en veut une quand même.
-    this.client = new OpenAI({ baseURL: options.baseURL, apiKey: options.apiKey ?? "not-needed" });
+    this.client = new OpenAI({
+      baseURL: options.baseURL,
+      apiKey: options.apiKey ?? "not-needed",
+      timeout: options.timeoutMs ?? 60_000,
+      maxRetries: 1,
+    });
   }
 
   async models(): Promise<ModelInfo[]> {
