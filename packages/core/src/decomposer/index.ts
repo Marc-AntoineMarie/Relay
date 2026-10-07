@@ -68,12 +68,21 @@ export interface DecomposeOptions {
 
 /** Décompose un prompt en pipeline (tâches non encore exécutées). */
 export async function decompose(opts: DecomposeOptions): Promise<Pipeline> {
+  const schema = planJsonSchema();
+  // Le schéma est aussi inscrit dans le prompt : les backends sans structured outputs
+  // natifs (mode json_object) produisent alors la bonne structure ; les autres l'ignorent.
+  const userMessage = `${buildUserMessage(opts.prompt, opts.context)}
+
+# Format de sortie
+Réponds UNIQUEMENT avec un objet JSON valide conforme à ce schéma, sans texte autour :
+${JSON.stringify(schema)}`;
+
   const request: CompletionRequest = {
     model: opts.model.model,
     effort: opts.model.effort,
     system: DECOMPOSER_SYSTEM_PROMPT,
-    messages: [{ role: "user", content: buildUserMessage(opts.prompt, opts.context) }],
-    format: { schema: planJsonSchema() },
+    messages: [{ role: "user", content: userMessage }],
+    format: { schema },
     maxTokens: 8_000,
   };
 

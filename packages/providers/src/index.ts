@@ -14,3 +14,5 @@ export type {
   ClaudePermissionMode,
   InterpretedChunk,
 } from "./claude-code.js";
+export { OpenAICompatibleProvider, buildChatParams } from "./openai-compatible.js";
+export type { OpenAICompatibleOptions, StructuredMode } from "./openai-compatible.js";

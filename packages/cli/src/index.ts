@@ -16,20 +16,45 @@ import {
   type Provider,
   type RelayConfig,
 } from "@relay/core";
-import { AnthropicProvider, ClaudeCodeProvider, PROVIDERS_VERSION } from "@relay/providers";
+import {
+  AnthropicProvider,
+  ClaudeCodeProvider,
+  OpenAICompatibleProvider,
+  PROVIDERS_VERSION,
+  type StructuredMode,
+} from "@relay/providers";
+import type { BillingMode } from "@relay/core";
+
+/** Backends compatibles OpenAI : un seul adaptateur, plusieurs fournisseurs. */
+const OPENAI_COMPAT: Record<
+  string,
+  { baseURL: string; envKey?: string; billing: BillingMode; structuredMode?: StructuredMode }
+> = {
+  gemini: { baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/", envKey: "GEMINI_API_KEY", billing: "free" },
+  groq: { baseURL: "https://api.groq.com/openai/v1", envKey: "GROQ_API_KEY", billing: "free" },
+  openrouter: { baseURL: "https://openrouter.ai/api/v1", envKey: "OPENROUTER_API_KEY", billing: "per-token" },
+  deepseek: { baseURL: "https://api.deepseek.com", envKey: "DEEPSEEK_API_KEY", billing: "per-token" },
+  ollama: { baseURL: "http://localhost:11434/v1", billing: "free" },
+};
 
 const HELP = `relay — orchestrateur de pipeline agentique
 
 Usage :
-  relay "votre prompt"              Décompose, route et exécute le prompt
-  relay --provider claude-code "…"  Utilise Claude Code (ton abonnement, sans clé API)
-  relay --version                   Affiche la version
-  relay --help                      Affiche cette aide
+  relay "votre prompt"                        Décompose, route et exécute (backend par défaut)
+  relay --provider claude-code "…"            Ton abonnement Claude, sans clé API
+  relay --provider gemini --model <id> "…"    Backend gratuit (ne touche pas ton quota Claude)
+  relay --version | --help
 
 Backends (--provider) :
-  anthropic    (défaut) API Messages, nécessite ANTHROPIC_API_KEY dans .env
-  claude-code  pilote le binaire 'claude' (abonnement) — aucune clé requise
+  anthropic    (défaut) API Messages — ANTHROPIC_API_KEY dans .env
+  claude-code  binaire 'claude' (abonnement) — aucune clé
+  gemini       palier GRATUIT — GEMINI_API_KEY (ai.google.dev)
+  groq         GRATUIT — GROQ_API_KEY (console.groq.com)
+  openrouter   OPENROUTER_API_KEY (modèles ':free' dispo)
+  deepseek     DEEPSEEK_API_KEY (très bon marché)
+  ollama       local (http://localhost:11434) — aucune clé
 
+--model <id>   force un modèle unique (requis pour les backends non-Claude)
 Config : relay.config.json (routes par défaut).`;
 
 /** Instancie le provider choisi. Lève une erreur lisible si indisponible. */
@@ -47,8 +72,30 @@ function makeProvider(name: string, config: RelayConfig): Provider {
     case "claude-code":
       // Abonnement : aucune clé. permissionMode "none" => pas d'effet de bord disque en v0.1.
       return new ClaudeCodeProvider({ cwd: process.cwd(), permissionMode: "none" });
-    default:
-      throw new ConfigError(`provider inconnu en v0.1 : ${name} (anthropic | claude-code)`);
+    default: {
+      const preset = OPENAI_COMPAT[name];
+      if (preset === undefined) {
+        throw new ConfigError(
+          `provider inconnu : ${name} (anthropic | claude-code | ${Object.keys(OPENAI_COMPAT).join(" | ")})`,
+        );
+      }
+      const apiKey = preset.envKey ? process.env[preset.envKey] : undefined;
+      if (preset.envKey && !apiKey) {
+        throw new ConfigError(
+          `${preset.envKey} manquante pour --provider ${name}. Mets-la dans .env (clé gratuite à créer chez le fournisseur).`,
+        );
+      }
+      const opts: {
+        name: string;
+        baseURL: string;
+        billing: BillingMode;
+        apiKey?: string;
+        structuredMode?: StructuredMode;
+      } = { name, baseURL: preset.baseURL, billing: preset.billing };
+      if (apiKey !== undefined) opts.apiKey = apiKey;
+      if (preset.structuredMode !== undefined) opts.structuredMode = preset.structuredMode;
+      return new OpenAICompatibleProvider(opts);
+    }
   }
 }
 
@@ -64,15 +111,14 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  // Option --provider <nom> (par défaut : celui du décomposeur dans la config).
+  // Options --provider <nom> et --model <id> ; le reste forme le prompt.
   let providerName: string | undefined;
+  let modelOverride: string | undefined;
   const rest: string[] = [];
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--provider") {
-      providerName = args[++i];
-    } else {
-      rest.push(args[i] as string);
-    }
+    if (args[i] === "--provider") providerName = args[++i];
+    else if (args[i] === "--model") modelOverride = args[++i];
+    else rest.push(args[i] as string);
   }
   const prompt = rest.join(" ");
   if (prompt.length === 0) {
@@ -98,7 +144,24 @@ async function main(argv: string[]): Promise<number> {
     throw err;
   }
 
+  // --model force un modèle unique sur le décomposeur et toutes les routes
+  // (indispensable pour tester sur un backend non-Claude : gemini, groq, ollama…).
+  if (modelOverride !== undefined) {
+    config.decomposer = { ...config.decomposer, model: modelOverride };
+    for (const tier of ["quick", "build", "deep", "escalate"] as const) {
+      config.routes[tier] = { ...config.routes[tier], model: modelOverride };
+    }
+  }
+
   const chosenProvider = providerName ?? config.decomposer.provider;
+  if (chosenProvider !== "anthropic" && chosenProvider !== "claude-code" && modelOverride === undefined) {
+    console.error(
+      `Avec --provider ${chosenProvider}, précise aussi --model <id> (ex. gemini-2.0-flash), ` +
+        `car les modèles par défaut sont des modèles Claude.`,
+    );
+    return 1;
+  }
+
   let provider: Provider;
   try {
     provider = makeProvider(chosenProvider, config);

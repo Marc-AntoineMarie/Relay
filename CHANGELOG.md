@@ -9,7 +9,23 @@ en même temps que le commit correspondant (un bloc par commit, le plus récent 
 ## [Non publié] — v0.1.0 en cours
 
 Proof of concept CLI : un prompt → décomposition → routing → exécution → métriques.
-Multi-backend (API Anthropic **et** Claude Code sur abonnement), exécution séquentielle.
+Multi-backend : API Anthropic, Claude Code (abonnement), et tous les backends compatibles
+OpenAI (Gemini, Groq, OpenRouter, DeepSeek, Ollama…). Exécution séquentielle.
+
+### (ce commit) — feat: provider compatible OpenAI + backends gratuits de test
+
+- **`providers/openai-compatible.ts`** : `OpenAICompatibleProvider`, un seul adaptateur
+  pour tout backend exposant l'API Chat Completions (Gemini, Groq, OpenRouter, DeepSeek,
+  Qwen, Ollama, OpenAI). `baseURL` + `apiKey` + `billing` configurables ; mapping des
+  paramètres en fonction pure testable (`buildChatParams`), structured outputs via
+  `json_object` (portable) ou `json_schema` strict.
+- **Décomposeur portable** : le schéma JSON est aussi inscrit dans le prompt → les
+  backends sans structured outputs natifs produisent quand même la bonne structure.
+- **CLI** : presets `--provider gemini|groq|openrouter|deepseek|ollama` + `--model <id>`
+  (force un modèle unique, requis hors Claude). Messages d'erreur guidés (clé/`--model`).
+- **`.env.example`** : clés des backends gratuits documentées.
+- **But** : tester **gratuitement**, sans consommer le quota Claude Code.
+- **Tests** : `buildChatParams` (5). Total : 48 tests verts.
 
 ### `ced1fcb` + (ce commit) — feat: provider Claude Code + métriques multi-backend
 
