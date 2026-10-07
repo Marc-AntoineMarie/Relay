@@ -1,0 +1,105 @@
+/**
+ * Erreurs normalisées. Chaque provider traduit ses erreurs HTTP/SDK en
+ * `ProviderRequestError` : le moteur décide du repli/retry sur `kind`, l'UI affiche
+ * un message clair via `describeError`.
+ */
+
+export type ErrorKind =
+  | "auth" // clé invalide ou sans accès
+  | "model_not_found" // modèle inexistant ou retiré pour ce compte
+  | "rate_limited" // quota / débit dépassé
+  | "overloaded" // service saturé (5xx)
+  | "timeout" // pas de réponse dans le délai
+  | "bad_request" // paramètre refusé par le fournisseur
+  | "network" // connexion impossible
+  | "unknown";
+
+const RETRYABLE: ReadonlySet<ErrorKind> = new Set(["rate_limited", "overloaded", "timeout", "network"]);
+
+export class ProviderRequestError extends Error {
+  override readonly name = "ProviderRequestError";
+  readonly retryable: boolean;
+
+  constructor(
+    readonly kind: ErrorKind,
+    message: string,
+    readonly provider: string,
+    readonly model?: string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.retryable = RETRYABLE.has(kind);
+  }
+}
+
+/** Classe une erreur HTTP. */
+export function kindFromStatus(status: number | undefined): ErrorKind {
+  if (status === undefined) return "unknown";
+  if (status === 401 || status === 403) return "auth";
+  if (status === 404) return "model_not_found";
+  if (status === 408) return "timeout";
+  if (status === 429) return "rate_limited";
+  if (status === 400 || status === 422) return "bad_request";
+  if (status >= 500) return "overloaded";
+  return "unknown";
+}
+
+/** Erreur prête à afficher : titre court, détail, conseil d'action. */
+export interface ErrorDescription {
+  kind: ErrorKind | "decomposer" | "config";
+  title: string;
+  detail: string;
+  hint?: string;
+}
+
+const COPY: Record<ErrorKind, { title: string; hint: string }> = {
+  auth: { title: "Clé API refusée", hint: "Vérifie ou remplace la clé de ce backend dans le panneau de gauche." },
+  model_not_found: {
+    title: "Modèle indisponible",
+    hint: "Ce modèle n'existe pas ou a été retiré pour ton compte : choisis-en un autre dans la liste détectée.",
+  },
+  rate_limited: {
+    title: "Quota ou débit dépassé",
+    hint: "Attends un peu, ou bascule sur un autre backend gratuit (Groq, Gemini…).",
+  },
+  overloaded: {
+    title: "Service saturé",
+    hint: "Le fournisseur est surchargé (fréquent sur les paliers gratuits). Réessaie, ou choisis un modèle « lite ».",
+  },
+  timeout: { title: "Pas de réponse à temps", hint: "Le backend n'a pas répondu dans le délai. Réessaie ou change de modèle." },
+  bad_request: {
+    title: "Requête refusée par le fournisseur",
+    hint: "Un paramètre n'est pas supporté par ce modèle : essaie un autre modèle.",
+  },
+  network: { title: "Connexion impossible", hint: "Vérifie ta connexion (ou qu'Ollama tourne, pour le local)." },
+  unknown: { title: "Erreur inattendue", hint: "Réessaie ; si ça persiste, change de modèle ou de backend." },
+};
+
+/** Extrait le message lisible d'une erreur fournisseur (souvent du JSON brut). */
+export function cleanProviderMessage(message: string): string {
+  const inner = /"message"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(message)?.[1];
+  return (inner ?? message).replace(/\\n/g, " ").replace(/\\"/g, '"').trim().slice(0, 400);
+}
+
+export function describeError(err: unknown): ErrorDescription {
+  if (err instanceof ProviderRequestError) {
+    const copy = COPY[err.kind];
+    const where = err.model !== undefined ? `${err.provider} · ${err.model}` : err.provider;
+    return { kind: err.kind, title: copy.title, detail: `${where} — ${cleanProviderMessage(err.message)}`, hint: copy.hint };
+  }
+  if (err instanceof Error) {
+    if (err.name === "DecomposerError") {
+      return {
+        kind: "decomposer",
+        title: "Plan inexploitable",
+        detail: err.message,
+        hint: "Le modèle n'a pas produit un plan valide malgré les relances : choisis un modèle plus capable pour le tier « build ».",
+      };
+    }
+    if (err.name === "ConfigError" || err.name === "ProviderError") {
+      return { kind: "config", title: "Configuration incomplète", detail: err.message };
+    }
+    return { kind: "unknown", title: COPY.unknown.title, detail: err.message, hint: COPY.unknown.hint };
+  }
+  return { kind: "unknown", title: COPY.unknown.title, detail: String(err), hint: COPY.unknown.hint };
+}

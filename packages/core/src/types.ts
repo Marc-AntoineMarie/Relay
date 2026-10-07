@@ -9,6 +9,7 @@
  * Les schémas Zod de validation (sortie du décomposeur, résultats de tâches) vivent
  * avec les composants qui franchissent la frontière LLM (décomposeur, étape 4).
  */
+import type { ErrorDescription } from "./errors.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Routage & effort
@@ -181,11 +182,20 @@ export interface Usage {
   thinkingTokens?: number;
 }
 
+/** Raison d'arrêt normalisée. `length` ⇒ sortie tronquée par la limite de tokens. */
+export type StopReason = "end" | "length" | "refusal" | "tool_use" | "other";
+
 /** Fragment de streaming émis par un provider. */
 export type CompletionChunk =
   | { type: "text"; text: string }
   | { type: "tool_use"; toolUse: { name: string; input: unknown } }
-  | { type: "usage"; usage: Usage };
+  | { type: "usage"; usage: Usage }
+  | { type: "stop"; reason: StopReason }
+  /** Requête servie par un modèle de repli (le modèle demandé était saturé ou retiré). */
+  | { type: "model"; model: string; fallbackFrom: string };
+
+/** Modèle choisi pour chaque tier de routage. */
+export type TierModels = Record<RouteTier, string>;
 
 /**
  * Mode de facturation d'un provider — permet de comparer des backends hétérogènes.
@@ -216,7 +226,7 @@ export type PipelineEvent =
   | { type: "task:start"; taskId: string; model: string; effort?: Effort }
   | { type: "task:chunk"; taskId: string; text: string }
   | { type: "task:done"; taskId: string; result: TaskIO; metrics: TaskMetrics }
-  | { type: "task:failed"; taskId: string; error: string; metrics: TaskMetrics }
+  | { type: "task:failed"; taskId: string; error: string; metrics: TaskMetrics; description?: ErrorDescription }
   | {
       type: "task:escalate";
       taskId: string;
@@ -225,7 +235,7 @@ export type PipelineEvent =
       reason: string;
     }
   | { type: "pipeline:done"; pipeline: Pipeline; metrics: PipelineMetrics }
-  | { type: "pipeline:failed"; pipeline: Pipeline; error: string };
+  | { type: "pipeline:failed"; pipeline: Pipeline; error: string; description?: ErrorDescription };
 
 export type PipelineEventType = PipelineEvent["type"];
 
@@ -235,7 +245,10 @@ export type PipelineEventType = PipelineEvent["type"];
 
 export interface TaskMetrics {
   taskId: string;
+  /** Modèle qui a réellement servi la tâche. */
   model: string;
+  /** Modèle demandé, si un repli a été utilisé. */
+  fallbackFrom?: string;
   provider: string;
   effort?: Effort;
   tier: RouteTier;

@@ -1,17 +1,21 @@
 /**
  * Décomposeur — transforme un prompt en pipeline structuré.
  *
- * Le plan est produit via structured outputs : le schéma Zod ci-dessous est converti en
- * JSON Schema et passé au provider, qui garantit une réponse conforme. On valide quand
- * même avec Zod avant de construire le pipeline (ceinture + bretelles).
+ * Robustesse (backends hétérogènes, dont des paliers gratuits capricieux) :
+ *  - structured outputs quand le provider les gère, schéma aussi inscrit dans le prompt ;
+ *  - extraction JSON tolérante (blocs ```json, texte autour) ;
+ *  - troncature détectée (`stop: length`) → relance avec un budget de tokens doublé ;
+ *  - JSON/plan invalide → relance de réparation (sortie fautive + erreur renvoyées au modèle).
  */
 import { z } from "zod";
 import type {
   CompletionRequest,
+  Message,
   ModelAssignment,
   Pipeline,
   ProjectContext,
   Provider,
+  StopReason,
   Task,
 } from "../types.js";
 import { DECOMPOSER_SYSTEM_PROMPT } from "./system-prompt.js";
@@ -34,11 +38,12 @@ export const PLAN_TASK_TYPES = [
 ] as const;
 
 export const PlanTaskSchema = z.object({
-  id: z.string(),
+  // coerce : certains modèles renvoient des ids numériques (1, 2…).
+  id: z.coerce.string(),
   type: z.enum(PLAN_TASK_TYPES),
   tier: z.enum(PLAN_TIERS),
   description: z.string(),
-  dependsOn: z.array(z.string()),
+  dependsOn: z.array(z.coerce.string()),
   expectedOutput: z.string(),
 });
 
@@ -50,12 +55,28 @@ export const PlanSchema = z.object({
 export type Plan = z.infer<typeof PlanSchema>;
 export type PlanTask = z.infer<typeof PlanTaskSchema>;
 
+/** Nombre total de tentatives (1 initiale + relances). */
+const MAX_ATTEMPTS = 3;
+const INITIAL_MAX_TOKENS = 12_000;
+
 /** JSON Schema (draft 2020-12) du plan, pour les structured outputs. */
 export function planJsonSchema(): Record<string, unknown> {
   const schema = z.toJSONSchema(PlanSchema) as Record<string, unknown>;
   // Anthropic n'attend pas la clé `$schema` au niveau racine du format.
   delete schema["$schema"];
   return schema;
+}
+
+export type DecomposerErrorKind = "empty" | "invalid_json" | "schema" | "dependencies" | "truncated";
+
+export class DecomposerError extends Error {
+  override readonly name = "DecomposerError";
+  constructor(
+    message: string,
+    readonly kind: DecomposerErrorKind = "invalid_json",
+  ) {
+    super(message);
+  }
 }
 
 export interface DecomposeOptions {
@@ -69,31 +90,85 @@ export interface DecomposeOptions {
 /** Décompose un prompt en pipeline (tâches non encore exécutées). */
 export async function decompose(opts: DecomposeOptions): Promise<Pipeline> {
   const schema = planJsonSchema();
-  // Le schéma est aussi inscrit dans le prompt : les backends sans structured outputs
-  // natifs (mode json_object) produisent alors la bonne structure ; les autres l'ignorent.
-  const userMessage = `${buildUserMessage(opts.prompt, opts.context)}
+  const messages: Message[] = [
+    {
+      role: "user",
+      content: `${buildUserMessage(opts.prompt, opts.context)}
 
 # Format de sortie
-Réponds UNIQUEMENT avec un objet JSON valide conforme à ce schéma, sans texte autour :
-${JSON.stringify(schema)}`;
+Réponds UNIQUEMENT avec un objet JSON valide conforme à ce schéma, sans texte ni bloc de code autour :
+${JSON.stringify(schema)}`,
+    },
+  ];
 
-  const request: CompletionRequest = {
-    model: opts.model.model,
-    effort: opts.model.effort,
-    system: DECOMPOSER_SYSTEM_PROMPT,
-    messages: [{ role: "user", content: userMessage }],
-    format: { schema },
-    maxTokens: 8_000,
-  };
+  let maxTokens = INITIAL_MAX_TOKENS;
+  let lastError: DecomposerError | undefined;
 
-  let raw = "";
-  for await (const chunk of opts.provider.complete(request)) {
-    if (chunk.type === "text") raw += chunk.text;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const { text, stop } = await collect(opts.provider, {
+      model: opts.model.model,
+      effort: opts.model.effort,
+      system: DECOMPOSER_SYSTEM_PROMPT,
+      messages,
+      format: { schema },
+      maxTokens,
+    });
+
+    try {
+      if (stop === "length") {
+        throw new DecomposerError("réponse tronquée (limite de tokens atteinte)", "truncated");
+      }
+      const plan = parsePlan(text);
+      validateDependencies(plan);
+      return buildPipeline(opts, plan);
+    } catch (err) {
+      if (!(err instanceof DecomposerError)) throw err;
+      lastError = err;
+      if (err.kind === "truncated") {
+        maxTokens *= 2; // même demande, plus de place
+      } else {
+        messages.push(
+          { role: "assistant", content: text.slice(0, 6_000) || "(réponse vide)" },
+          { role: "user", content: repairPrompt(err) },
+        );
+      }
+    }
   }
 
-  const plan = parsePlan(raw);
-  validateDependencies(plan);
+  throw new DecomposerError(
+    `${lastError?.message ?? "échec"} (après ${MAX_ATTEMPTS} tentatives)`,
+    lastError?.kind ?? "invalid_json",
+  );
+}
 
+/** Extrait l'objet JSON d'une réponse (tolère les blocs ```json et le texte autour). */
+export function extractJson(raw: string): string {
+  const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw)?.[1];
+  const body = fenced ?? raw;
+  const start = body.indexOf("{");
+  const end = body.lastIndexOf("}");
+  return start !== -1 && end > start ? body.slice(start, end + 1) : body.trim();
+}
+
+async function collect(
+  provider: Provider,
+  request: CompletionRequest,
+): Promise<{ text: string; stop: StopReason | undefined }> {
+  let text = "";
+  let stop: StopReason | undefined;
+  for await (const chunk of provider.complete(request)) {
+    if (chunk.type === "text") text += chunk.text;
+    else if (chunk.type === "stop") stop = chunk.reason;
+  }
+  return { text, stop };
+}
+
+function repairPrompt(err: DecomposerError): string {
+  return `Ta réponse précédente est inutilisable : ${err.message}.
+Renvoie UNIQUEMENT l'objet JSON complet et valide, conforme au schéma demandé (3 à 8 tâches, ids existants dans dependsOn, pas de cycle), sans texte ni bloc de code autour.`;
+}
+
+function buildPipeline(opts: DecomposeOptions, plan: Plan): Pipeline {
   const tasks: Task[] = plan.tasks.map((t) => ({
     id: t.id,
     type: t.type,
@@ -104,7 +179,6 @@ ${JSON.stringify(schema)}`;
     attempts: [],
     expectedOutput: t.expectedOutput,
   }));
-
   return {
     id: crypto.randomUUID(),
     prompt: opts.prompt,
@@ -126,15 +200,20 @@ function buildUserMessage(prompt: string, context: ProjectContext): string {
 }
 
 function parsePlan(raw: string): Plan {
+  if (raw.trim().length === 0) throw new DecomposerError("réponse vide", "empty");
   let json: unknown;
   try {
-    json = JSON.parse(raw);
+    json = JSON.parse(extractJson(raw));
   } catch {
-    throw new DecomposerError(`le décomposeur n'a pas renvoyé du JSON valide : ${truncate(raw)}`);
+    throw new DecomposerError(`JSON invalide : ${truncate(raw)}`, "invalid_json");
   }
   const result = PlanSchema.safeParse(json);
   if (!result.success) {
-    throw new DecomposerError(`plan non conforme au schéma : ${result.error.message}`);
+    const issues = result.error.issues
+      .slice(0, 3)
+      .map((i) => `${i.path.join(".") || "racine"} : ${i.message}`)
+      .join(" ; ");
+    throw new DecomposerError(`plan non conforme au schéma (${issues})`, "schema");
   }
   return result.data;
 }
@@ -145,10 +224,10 @@ function validateDependencies(plan: Plan): void {
   for (const task of plan.tasks) {
     for (const dep of task.dependsOn) {
       if (!ids.has(dep)) {
-        throw new DecomposerError(`tâche ${task.id} dépend d'un ID inexistant : ${dep}`);
+        throw new DecomposerError(`tâche ${task.id} dépend d'un ID inexistant : ${dep}`, "dependencies");
       }
       if (dep === task.id) {
-        throw new DecomposerError(`tâche ${task.id} dépend d'elle-même`);
+        throw new DecomposerError(`tâche ${task.id} dépend d'elle-même`, "dependencies");
       }
     }
   }
@@ -162,7 +241,7 @@ function detectCycle(plan: Plan): void {
   const visit = (id: string): void => {
     const s = state.get(id);
     if (s === "done") return;
-    if (s === "visiting") throw new DecomposerError(`cycle de dépendances détecté sur ${id}`);
+    if (s === "visiting") throw new DecomposerError(`cycle de dépendances détecté sur ${id}`, "dependencies");
     state.set(id, "visiting");
     for (const dep of deps.get(id) ?? []) visit(dep);
     state.set(id, "done");
@@ -171,10 +250,6 @@ function detectCycle(plan: Plan): void {
   for (const task of plan.tasks) visit(task.id);
 }
 
-function truncate(s: string, max = 200): string {
+function truncate(s: string, max = 160): string {
   return s.length > max ? `${s.slice(0, max)}…` : s;
-}
-
-export class DecomposerError extends Error {
-  override readonly name = "DecomposerError";
 }

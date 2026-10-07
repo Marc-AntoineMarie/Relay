@@ -2,16 +2,14 @@
  * Exécuteur — parcourt le DAG en ordre topologique, chaîne les résultats et émet des
  * événements typés.
  *
- * v0.1 : chaque tâche = un appel au provider assigné (génération). L'ordre est séquentiel.
+ * v0.1 : chaque tâche = un appel au provider assigné (génération), séquentiel.
+ * Le provider gère le repli de modèle (saturé/retiré) ; l'exécuteur enregistre le modèle
+ * réellement utilisé. Arrêt possible via `signal` (bouton « Arrêter » de l'UI).
  *
  * À VENIR (worker « agent exécutant ») : remplacer `runTask` par une boucle d'outils
- * (lecture/écriture de fichiers + shell) pour que le worker applique réellement son
- * travail et le vérifie. Le point d'injection est `ExecutorOptions.runTask` — tout le
- * reste (ordre, chaînage, événements, métriques) reste identique.
- *
- * NON couvert en v0.1 : vérificateur et escalade automatique (le routeur fournit déjà
- * `escalate()`, l'exécuteur le câblera en v0.2), parallélisme.
+ * (fichiers + shell). Escalade automatique (router.escalate) et parallélisme : v0.2.
  */
+import { describeError } from "../errors.js";
 import { computePipelineMetrics } from "../metrics/index.js";
 import { buildWorkerPrompt } from "../decomposer/system-prompt.js";
 import { Router } from "../router/index.js";
@@ -20,21 +18,27 @@ import type {
   Pipeline,
   PipelineEvent,
   Provider,
+  StopReason,
   Task,
   TaskIO,
   TaskMetrics,
 } from "../types.js";
 
-const WORKER_SYSTEM = "Tu es un agent d'exécution dans le pipeline Relay. Tu réalises une tâche précise et renvoies un résultat structuré.";
+const WORKER_SYSTEM =
+  "Tu es un agent d'exécution dans le pipeline Relay. Tu réalises une tâche précise et renvoies un résultat structuré.";
 
-const DEFAULT_WORKER_MAX_TOKENS = 8_000;
+/** Budget large : les modèles « thinking » consomment une partie de max_tokens en réflexion. */
+const DEFAULT_WORKER_MAX_TOKENS = 16_000;
 
-/** Résultat brut d'un worker : le texte produit + l'usage de tokens. */
+/** Résultat brut d'un worker. */
 export interface WorkerResult {
   text: string;
   inputTokens: number;
   outputTokens: number;
   thinkingTokens: number;
+  /** Modèle réellement utilisé si le provider a fait un repli. */
+  servedModel?: string;
+  stop?: StopReason;
 }
 
 export interface RunTaskContext {
@@ -45,7 +49,7 @@ export interface RunTaskContext {
   onChunk: (text: string) => void;
 }
 
-/** Stratégie d'exécution d'une tâche. Par défaut : un appel au provider (voir below). */
+/** Stratégie d'exécution d'une tâche. Par défaut : un appel au provider. */
 export type RunTask = (ctx: RunTaskContext) => Promise<WorkerResult>;
 
 export interface ExecutorOptions {
@@ -56,6 +60,8 @@ export interface ExecutorOptions {
   baselineModel?: string;
   /** Point d'injection du worker agentique. Défaut : génération simple. */
   runTask?: RunTask;
+  /** Interrompt le pipeline avant la tâche suivante. */
+  signal?: AbortSignal;
 }
 
 export class ExecutorError extends Error {
@@ -76,6 +82,12 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
   const taskMetrics: TaskMetrics[] = [];
 
   for (const task of order) {
+    if (opts.signal?.aborted === true) {
+      pipeline.status = "failed";
+      yield { type: "pipeline:failed", pipeline, error: "pipeline arrêté par l'utilisateur" };
+      return;
+    }
+
     const assigned = router.assign(task);
     task.assignedModel = assigned.assignedModel;
     task.assignedEffort = assigned.assignedEffort;
@@ -83,10 +95,9 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
 
     const model = task.assignedModel;
     if (model === undefined) {
-      const error = `aucun modèle assigné pour la tâche ${task.id}`;
       task.status = "failed";
       pipeline.status = "failed";
-      yield { type: "pipeline:failed", pipeline, error };
+      yield { type: "pipeline:failed", pipeline, error: `aucun modèle assigné pour la tâche ${task.id}` };
       return;
     }
 
@@ -104,33 +115,32 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
     const chunks: string[] = [];
     let result: WorkerResult;
     try {
-      // On collecte les chunks ici pour pouvoir les émettre après l'await.
-      result = await runTask({
-        task,
-        request,
-        provider,
-        onChunk: (text) => chunks.push(text),
-      });
+      result = await runTask({ task, request, provider, onChunk: (text) => chunks.push(text) });
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
+      const description = describeError(err);
+      const error = `${description.title} — ${description.detail}`;
       const metrics = failMetrics(task, model, provider.name, started);
       task.status = "failed";
       task.attempts.push({ model, effort: task.assignedEffort, success: false, metrics, error });
       taskMetrics.push(metrics);
-      yield { type: "task:failed", taskId: task.id, error, metrics };
+      yield { type: "task:failed", taskId: task.id, error, metrics, description };
       pipeline.status = "failed";
-      yield { type: "pipeline:failed", pipeline, error };
+      yield { type: "pipeline:failed", pipeline, error, description };
       return;
     }
 
     for (const text of chunks) yield { type: "task:chunk", taskId: task.id, text };
 
-    const durationMs = Date.now() - started;
-    const output: TaskIO = { summary: firstLine(result.text), data: { result: result.text } };
-    const referenceCost = provider.estimateCost(model, result.inputTokens, result.outputTokens);
+    const servedModel = result.servedModel ?? model;
+    const truncated = result.stop === "length";
+    const output: TaskIO = {
+      summary: firstLine(result.text),
+      data: { result: result.text, ...(truncated ? { truncated: true } : {}) },
+    };
+    const referenceCost = provider.estimateCost(servedModel, result.inputTokens, result.outputTokens);
     const metrics: TaskMetrics = {
       taskId: task.id,
-      model,
+      model: servedModel,
       provider: provider.name,
       effort: task.assignedEffort,
       tier: task.tier,
@@ -139,14 +149,15 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
       thinkingTokens: result.thinkingTokens,
       referenceCost,
       billedCost: provider.billing === "per-token" ? referenceCost : 0,
-      durationMs,
+      durationMs: Date.now() - started,
       success: true,
       escalated: false,
     };
+    if (servedModel !== model) metrics.fallbackFrom = model;
 
     task.output = output;
     task.status = "done";
-    task.attempts.push({ model, effort: task.assignedEffort, success: true, metrics, result: result.text });
+    task.attempts.push({ model: servedModel, effort: task.assignedEffort, success: true, metrics, result: result.text });
     taskMetrics.push(metrics);
 
     yield { type: "task:done", taskId: task.id, result: output, metrics };
@@ -161,23 +172,31 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
 
 /** Worker par défaut : un appel au provider, texte accumulé. */
 const defaultRunTask: RunTask = async (ctx) => {
-  let text = "";
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let thinkingTokens = 0;
+  const result: WorkerResult = { text: "", inputTokens: 0, outputTokens: 0, thinkingTokens: 0 };
 
   for await (const chunk of ctx.provider.complete(ctx.request)) {
-    if (chunk.type === "text") {
-      text += chunk.text;
-      ctx.onChunk(chunk.text);
-    } else if (chunk.type === "usage") {
-      inputTokens = chunk.usage.inputTokens;
-      outputTokens = chunk.usage.outputTokens;
-      thinkingTokens = chunk.usage.thinkingTokens ?? 0;
+    switch (chunk.type) {
+      case "text":
+        result.text += chunk.text;
+        ctx.onChunk(chunk.text);
+        break;
+      case "usage":
+        result.inputTokens = chunk.usage.inputTokens;
+        result.outputTokens = chunk.usage.outputTokens;
+        result.thinkingTokens = chunk.usage.thinkingTokens ?? 0;
+        break;
+      case "model":
+        result.servedModel = chunk.model;
+        break;
+      case "stop":
+        result.stop = chunk.reason;
+        break;
+      default:
+        break;
     }
   }
 
-  return { text, inputTokens, outputTokens, thinkingTokens };
+  return result;
 };
 
 function buildTaskPrompt(pipeline: Pipeline, task: Task): string {
@@ -185,6 +204,7 @@ function buildTaskPrompt(pipeline: Pipeline, task: Task): string {
     .map((t) => `- [${t.id}] (${t.tier}/${t.type}) ${t.description}`)
     .join("\n");
 
+  // Résumés seulement : renvoyer les sorties complètes ferait exploser l'input.
   const depResults = task.dependsOn
     .map((id) => pipeline.tasks.find((t) => t.id === id))
     .filter((t): t is Task => t !== undefined && t.output !== undefined)
@@ -253,5 +273,5 @@ function failMetrics(task: Task, model: string, providerName: string, started: n
 
 function firstLine(text: string): string {
   const line = text.split("\n").find((l) => l.trim().length > 0);
-  return line?.trim() ?? "(résultat vide)";
+  return line?.replace(/^[#*\s>-]+/, "").trim() || "(résultat vide)";
 }
