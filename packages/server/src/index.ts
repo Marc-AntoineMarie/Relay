@@ -29,7 +29,6 @@ import {
   providerReadiness,
 } from "@relay/providers";
 
-const HOST = "127.0.0.1";
 const PORT = Number(process.env["RELAY_PORT"] ?? 5174);
 const ENV_PATH = join(process.cwd(), ".env");
 const WEB_DIST = join(process.cwd(), "packages", "web", "dist");
@@ -220,12 +219,32 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
 
 export function startServer(): void {
   loadEnv();
-  createServer(handler).listen(PORT, HOST, () => {
-    console.log(`Relay — serveur local sur http://${HOST}:${PORT}`);
-    if (!existsSync(join(WEB_DIST, "index.html"))) {
-      console.log("UI non buildée : lance l'app web en dev (pnpm --filter @relay/web dev).");
+  const server = createServer(handler);
+
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`[relay] le port ${PORT} est déjà utilisé.`);
+      console.error(`→ ferme l'autre serveur, ou lance avec un autre port : RELAY_PORT=5180 pnpm server`);
+    } else {
+      console.error(`[relay] erreur serveur : ${err.message}`);
     }
+    process.exit(1);
+  });
+
+  // Sans host → écoute en IPv4 et IPv6 (localhost fonctionne dans les deux cas).
+  server.listen(PORT, () => {
+    console.log(`\n✅ Relay — dashboard prêt :`);
+    console.log(`   →  http://localhost:${PORT}`);
+    console.log(`   →  http://127.0.0.1:${PORT}\n`);
+    if (!existsSync(join(WEB_DIST, "index.html"))) {
+      console.log("ℹ UI non buildée : 'pnpm web:build' (ou 'pnpm web:dev' pour le mode dev).\n");
+    }
+    console.log("Laisse ce terminal ouvert (le serveur tourne ici). Ctrl+C pour arrêter.");
   });
 }
+
+process.on("uncaughtException", (err) => {
+  console.error(`[relay] exception non gérée : ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+});
 
 startServer();

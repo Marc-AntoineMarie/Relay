@@ -8,7 +8,14 @@ en même temps que le commit correspondant (un bloc par commit, le plus récent 
 
 ## [Non publié] — v0.1.0 en cours (+ début dashboard v0.3)
 
-### (ce commit) — feat: dashboard web React + Vite
+### (ce commit) — fix: serveur accessible en IPv4 **et** IPv6 (localhost)
+
+- Le serveur écoutait seulement en IPv4 (`127.0.0.1`) → `localhost` résolu en `::1`
+  donnait « site inaccessible ». Désormais écoute dual-stack.
+- Gestion claire de `EADDRINUSE` (port occupé → message + `RELAY_PORT`), logs de
+  démarrage explicites, capture des exceptions non gérées.
+
+### feat: dashboard web React + Vite
 
 - **`packages/web`** : app React + Vite, **dark mode**. Panneau latéral « Backends &
   clés » (voyant prêt/en attente, saisie de clé → `.env` côté serveur, lien pour obtenir
