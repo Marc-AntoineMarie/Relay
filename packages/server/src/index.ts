@@ -6,14 +6,16 @@
  * - `GET  /api/state`  : backends prêts, modèles du registre, routes.
  * - `GET  /api/models` : modèles de chat d'un backend + suggestion par tier.
  * - `GET  /api/pool`   : pool du mode auto (tous les comptes prêts, profils, santé).
- * - `POST /api/keys`   : enregistre une clé dans `.env`.
+ * - `GET|PUT /api/settings` : réglages (mode, stratégie, plafonds, budget, synthèse) → `.relay/settings.json`.
+ * - `POST /api/keys`   : enregistre une clé dans `.env` ; `/api/keys/test`, `/api/keys/delete`.
  * - `POST /api/run`    : exécute un pipeline (mode auto ou manuel), streame les événements en SSE.
  * - sert l'app web buildée (packages/web/dist) si présente.
  *
  * Écoute uniquement sur 127.0.0.1 (outil local).
  */
+import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, normalize, extname, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import {
@@ -82,47 +84,117 @@ async function detectModels(name: string): Promise<string[]> {
   return models;
 }
 
+interface PoolModel {
+  model: string;
+  level: RouteTier;
+  tags: string[];
+  family: string;
+  known: boolean;
+  inputPerM: number;
+  outputPerM: number;
+  health?: string;
+}
+
 interface PoolAccount {
   name: string;
   label: string;
   billing: BillingMode;
-  models: Array<{
-    model: string;
-    level: RouteTier;
-    tags: string[];
-    family: string;
-    inputPerM: number;
-    outputPerM: number;
-    health?: string;
-  }>;
+  /** Modèles effectivement dans le pool auto (sélection recommandée ± choix de l'utilisateur). */
+  models: PoolModel[];
+  /** Tous les modèles de chat détectés, pour le catalogue des Réglages. */
+  available: Array<PoolModel & { recommended: boolean; inPool: boolean }>;
   error?: ErrorDescription;
 }
 
-/** Pool du mode auto : chaque compte prêt apporte ses modèles connus, profilés. */
-async function buildPool(): Promise<PoolAccount[]> {
+function profileOf(provider: string, model: string): PoolModel {
+  const prof = profileModel(model);
+  const h = health.status(provider, model);
+  return {
+    model,
+    level: prof.level,
+    tags: prof.tags,
+    family: prof.family,
+    known: prof.known,
+    inputPerM: prof.inputPerM,
+    outputPerM: prof.outputPerM,
+    ...(h !== undefined ? { health: h } : {}),
+  };
+}
+
+/** Pool du mode auto : chaque compte prêt apporte sa sélection, ajustée par ses réglages. */
+async function buildPool(policies: Record<string, AccountPolicy>): Promise<PoolAccount[]> {
   const ready = providerReadiness().filter((p) => p.ready);
   return Promise.all(
     ready.map(async (p): Promise<PoolAccount> => {
       try {
-        const models = autoPoolModels(p.name, await detectModels(p.name)).map((model) => {
-          const prof = profileModel(model);
-          const h = health.status(p.name, model);
-          return {
-            model,
-            level: prof.level,
-            tags: prof.tags,
-            family: prof.family,
-            inputPerM: prof.inputPerM,
-            outputPerM: prof.outputPerM,
-            ...(h !== undefined ? { health: h } : {}),
-          };
-        });
-        return { name: p.name, label: p.label, billing: p.billing, models };
+        const detected = await detectModels(p.name);
+        const recommended = autoPoolModels(p.name, detected);
+        const policy = policies[p.name];
+        const inPool = new Set([
+          ...recommended.filter((m) => policy?.disabledModels?.includes(m) !== true),
+          ...(policy?.extraModels ?? []).filter((m) => detected.length === 0 || detected.includes(m)),
+        ]);
+        return {
+          name: p.name,
+          label: p.label,
+          billing: p.billing,
+          models: [...inPool].map((m) => profileOf(p.name, m)),
+          available: detected.map((m) => ({
+            ...profileOf(p.name, m),
+            recommended: recommended.includes(m),
+            inPool: inPool.has(m),
+          })),
+        };
       } catch (err) {
-        return { name: p.name, label: p.label, billing: p.billing, models: [], error: describeError(err) };
+        return { name: p.name, label: p.label, billing: p.billing, models: [], available: [], error: describeError(err) };
       }
     }),
   );
+}
+
+// ── Réglages (.relay/settings.json, ignoré par git) ──────────────────────────
+
+interface RelaySettings {
+  mode: "auto" | "manual";
+  strategy: Strategy;
+  policies: Record<string, AccountPolicy>;
+  /** Budget max facturé par run ($), null = illimité. */
+  budgetPerRun: number | null;
+  /** Étape de synthèse finale. */
+  synthesis: boolean;
+}
+
+const settingsPath = (): string => join(ROOT_DIR, ".relay", "settings.json");
+const DEFAULT_SETTINGS: RelaySettings = {
+  mode: "auto",
+  strategy: "balanced",
+  policies: DEFAULT_POLICIES,
+  budgetPerRun: null,
+  synthesis: true,
+};
+
+/** Réglages valides : les champs inconnus ou mal typés retombent sur les défauts. */
+function sanitizeSettings(raw: Partial<RelaySettings>): RelaySettings {
+  return {
+    mode: raw.mode === "manual" ? "manual" : "auto",
+    strategy: raw.strategy !== undefined && STRATEGIES.includes(raw.strategy) ? raw.strategy : DEFAULT_SETTINGS.strategy,
+    policies: { ...DEFAULT_POLICIES, ...(typeof raw.policies === "object" && raw.policies !== null ? raw.policies : {}) },
+    budgetPerRun: typeof raw.budgetPerRun === "number" && raw.budgetPerRun >= 0 ? raw.budgetPerRun : null,
+    synthesis: typeof raw.synthesis === "boolean" ? raw.synthesis : DEFAULT_SETTINGS.synthesis,
+  };
+}
+
+function loadSettings(): RelaySettings {
+  try {
+    return sanitizeSettings(JSON.parse(readFileSync(settingsPath(), "utf8")) as Partial<RelaySettings>);
+  } catch {
+    return sanitizeSettings({});
+  }
+}
+
+function saveSettings(settings: RelaySettings): void {
+  mkdirSync(dirname(settingsPath()), { recursive: true });
+  writeFileSync(settingsPath(), `${JSON.stringify(settings, null, 2)}\n`);
 }
 
 const PORT = Number(process.env["RELAY_PORT"] ?? 5174);
@@ -150,8 +222,8 @@ function loadEnv(): void {
   }
 }
 
-/** Écrit (ou remplace) une clé dans .env et dans process.env. */
-function setEnvKey(key: string, value: string): void {
+/** Écrit (ou retire, si `value` est absent) une clé dans .env et dans process.env. */
+function setEnvKey(key: string, value?: string): void {
   let content = "";
   try {
     content = readFileSync(ENV_PATH, "utf8");
@@ -161,9 +233,40 @@ function setEnvKey(key: string, value: string): void {
   const kept = content
     .split("\n")
     .filter((l) => l.trim().length > 0 && !l.startsWith(`${key}=`));
-  kept.push(`${key}=${value}`);
+  if (value !== undefined) kept.push(`${key}=${value}`);
   writeFileSync(ENV_PATH, `${kept.join("\n")}\n`);
-  process.env[key] = value;
+  if (value !== undefined) process.env[key] = value;
+  else delete process.env[key];
+}
+
+/** Comptes + fin de clé masquée (jamais la clé entière). */
+function accountsState(): Array<ReturnType<typeof providerReadiness>[number] & { keyHint?: string }> {
+  return providerReadiness().map((p) => {
+    const key = p.envKey !== undefined ? process.env[p.envKey]?.trim() : undefined;
+    return key ? { ...p, keyHint: `…${key.slice(-4)}` } : p;
+  });
+}
+
+/** Le binaire `claude` répond-il ? (test du compte Claude Code, sans consommer de quota) */
+function checkClaudeCli(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("claude", ["--version"], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error("pas de réponse du binaire claude"));
+    }, 8_000);
+    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(new Error(`binaire claude introuvable : ${e.message}`));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(out.trim());
+      else reject(new Error(`claude --version a quitté avec le code ${code}`));
+    });
+  });
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -196,7 +299,7 @@ function safeLoadConfig(): RelayConfig | null {
 function handleState(res: ServerResponse): void {
   const config = safeLoadConfig();
   sendJson(res, 200, {
-    providers: providerReadiness(),
+    providers: accountsState(),
     models: defaultRegistry.all(),
     routes: config?.routes ?? null,
     decomposer: config?.decomposer ?? null,
@@ -215,7 +318,59 @@ async function handleModels(fullUrl: string, res: ServerResponse): Promise<void>
 }
 
 async function handlePool(res: ServerResponse): Promise<void> {
-  sendJson(res, 200, { accounts: await buildPool(), defaultPolicies: DEFAULT_POLICIES });
+  sendJson(res, 200, { accounts: await buildPool(loadSettings().policies), defaultPolicies: DEFAULT_POLICIES });
+}
+
+async function handleSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method === "PUT") {
+    const next = sanitizeSettings({ ...loadSettings(), ...((await readBody(req)) as Partial<RelaySettings>) });
+    saveSettings(next);
+    sendJson(res, 200, next);
+    return;
+  }
+  sendJson(res, 200, loadSettings());
+}
+
+/** Teste un compte : clé enregistrée, ou clé saisie (`value`) sans l'enregistrer. */
+async function handleKeyTest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const { provider: name = "", value } = (await readBody(req)) as { provider?: string; value?: string };
+  const preset = PROVIDER_PRESETS[name];
+  if (preset === undefined) {
+    sendJson(res, 400, { error: "compte inconnu" });
+    return;
+  }
+  const started = Date.now();
+  try {
+    let detail: string;
+    if (preset.kind === "claude-code") {
+      detail = `binaire claude disponible (${await checkClaudeCli()})`;
+    } else {
+      const env = value?.trim() && preset.envKey ? { ...process.env, [preset.envKey]: value.trim() } : process.env;
+      const provider = createProvider(name, { cwd: ROOT_DIR, env });
+      if (preset.kind === "anthropic") {
+        // count_tokens est gratuit : vérifie la clé sans rien consommer.
+        await provider.countTokens({ model: "claude-haiku-4-5", system: "", messages: [{ role: "user", content: "ping" }] });
+        detail = "clé acceptée par l'API Anthropic";
+      } else {
+        detail = `${(await provider.models()).length} modèles accessibles`;
+      }
+    }
+    sendJson(res, 200, { ok: true, detail, ms: Date.now() - started });
+  } catch (err) {
+    sendJson(res, 200, { ok: false, error: describeError(err), ms: Date.now() - started });
+  }
+}
+
+async function handleKeyDelete(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const { provider: name = "" } = (await readBody(req)) as { provider?: string };
+  const preset = PROVIDER_PRESETS[name];
+  if (preset?.envKey === undefined) {
+    sendJson(res, 400, { error: "compte sans clé" });
+    return;
+  }
+  setEnvKey(preset.envKey);
+  modelCache.delete(name);
+  sendJson(res, 200, { providers: accountsState() });
 }
 
 interface RunBody {
@@ -229,6 +384,10 @@ interface RunBody {
   model?: string;
   strategy?: Strategy;
   policies?: Record<string, AccountPolicy>;
+  /** Budget max facturé ($) ; null = illimité. Absent ⇒ réglages. */
+  budgetPerRun?: number | null;
+  /** Étape de synthèse. Absent ⇒ réglages. */
+  synthesis?: boolean;
 }
 
 /**
@@ -264,7 +423,7 @@ async function handleKeys(req: IncomingMessage, res: ServerResponse): Promise<vo
   }
   setEnvKey(preset.envKey, body.value.trim());
   if (body.provider !== undefined) modelCache.delete(body.provider);
-  sendJson(res, 200, { providers: providerReadiness() });
+  sendJson(res, 200, { providers: accountsState() });
 }
 
 function sseWrite(res: ServerResponse, obj: unknown): void {
@@ -295,17 +454,22 @@ async function runManual(body: RunBody, prompt: string, res: ServerResponse, sig
   });
 
   sseWrite(res, { type: "routes", routes: config.routes });
-  for await (const event of execute({ pipeline, provider, router: new Router(config), signal })) {
+  const synthesis = body.synthesis ?? loadSettings().synthesis;
+  for await (const event of execute({ pipeline, provider, router: new Router(config), signal, synthesis })) {
     sseWrite(res, event satisfies PipelineEvent);
   }
 }
 
 /** Mode auto : le routeur choisit, pour le plan puis pour chaque tâche, parmi tous les comptes. */
 async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signal: AbortSignal): Promise<void> {
-  const strategy: Strategy = body.strategy !== undefined && STRATEGIES.includes(body.strategy) ? body.strategy : "balanced";
-  const policies = { ...DEFAULT_POLICIES, ...body.policies };
+  const settings = loadSettings();
+  const strategy: Strategy =
+    body.strategy !== undefined && STRATEGIES.includes(body.strategy) ? body.strategy : settings.strategy;
+  const policies = { ...settings.policies, ...body.policies };
+  const budget = body.budgetPerRun !== undefined ? body.budgetPerRun : settings.budgetPerRun;
+  const synthesis = body.synthesis ?? settings.synthesis;
 
-  const accounts = await buildPool();
+  const accounts = await buildPool(policies);
   for (const a of accounts) {
     if (a.error !== undefined) {
       sseLog(res, { level: "warn", category: "info", title: `Compte ${a.label} ignoré : ${a.error.title}`, detail: a.error.detail });
@@ -314,13 +478,15 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
   const entries: PoolEntry[] = accounts
     .filter((a) => policies[a.name]?.enabled !== false)
     .flatMap((a) => a.models.map((m) => ({ provider: a.name, model: m.model, billing: a.billing })));
-  const router = new AutoRouter(entries, { strategy, policies, health });
+  const router = new AutoRouter(entries, { strategy, policies, health, ...(budget !== null ? { budget } : {}) });
   const used = accounts.filter((a) => a.models.length > 0 && policies[a.name]?.enabled !== false).map((a) => a.label);
   sseWrite(res, { type: "mode", mode: "auto", strategy, accounts: used, poolSize: router.size });
   sseLog(res, {
     level: "info",
     category: "info",
-    title: `Mode auto · stratégie ${strategy} · ${used.length} compte(s) · ${router.size} modèles`,
+    title: `Mode auto · stratégie ${strategy} · ${used.length} compte(s) · ${router.size} modèles · budget ${
+      budget === null ? "illimité" : `$${budget.toFixed(2)}`
+    } · synthèse ${synthesis ? "oui" : "non"}`,
     detail: accounts.map((a) => `${a.label} : ${a.models.map((m) => m.model).join(", ") || "aucun modèle"}`).join("\n"),
   });
 
@@ -371,8 +537,9 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
     }
   }
   if (pipeline === undefined) throw new ConfigError("planification impossible");
+  router.spend(pipeline.planning?.billedCost ?? 0); // le plan compte dans le budget
 
-  for await (const event of execute({ pipeline, routing: autoRouting(router, getProvider, health), signal })) {
+  for await (const event of execute({ pipeline, routing: autoRouting(router, getProvider, health), signal, synthesis })) {
     sseWrite(res, event satisfies PipelineEvent);
   }
 }
@@ -442,6 +609,9 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       if (url === "/api/state" && req.method === "GET") return handleState(res);
       if (url === "/api/models" && req.method === "GET") return await handleModels(req.url ?? "", res);
       if (url === "/api/pool" && req.method === "GET") return await handlePool(res);
+      if (url === "/api/settings" && (req.method === "GET" || req.method === "PUT")) return await handleSettings(req, res);
+      if (url === "/api/keys/test" && req.method === "POST") return await handleKeyTest(req, res);
+      if (url === "/api/keys/delete" && req.method === "POST") return await handleKeyDelete(req, res);
       if (url === "/api/keys" && req.method === "POST") return await handleKeys(req, res);
       if (url === "/api/run" && req.method === "POST") return await handleRun(req, res);
       return serveStatic(req, res);

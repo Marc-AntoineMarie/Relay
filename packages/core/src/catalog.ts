@@ -52,10 +52,15 @@ const RULES: Array<{ match: RegExp; family: string; profile: Profile }> = [
   { match: /gemini.*pro/i, family: "Gemini Pro", profile: { level: "deep", tags: ["reasoning", "code", "long_context"], inputPerM: 1.25, outputPerM: 10, speed: "normal", quality: 0.85 } },
   { match: /deepseek.*(reasoner|r1)/i, family: "DeepSeek Reasoner", profile: { level: "deep", tags: ["reasoning", "code"], inputPerM: 0.55, outputPerM: 2.19, speed: "slow", quality: 0.8 } },
   { match: /deepseek/i, family: "DeepSeek Chat", profile: { level: "build", tags: ["code"], inputPerM: 0.27, outputPerM: 1.1, speed: "normal", quality: 0.7 } },
+  { match: /gpt-oss-120b/i, family: "GPT-OSS 120B", profile: { level: "build", tags: ["code", "reasoning", "fast"], inputPerM: 0.15, outputPerM: 0.6, speed: "fast", quality: 0.75 } },
+  { match: /gpt-oss/i, family: "GPT-OSS 20B", profile: { level: "quick", tags: ["fast", "code"], inputPerM: 0.075, outputPerM: 0.3, speed: "fast", quality: 0.55 } },
+  { match: /kimi/i, family: "Kimi K2", profile: { level: "build", tags: ["code", "long_context"], inputPerM: 1, outputPerM: 3, speed: "normal", quality: 0.8 } },
+  { match: /llama-4/i, family: "Llama 4", profile: { level: "build", tags: ["fast", "long_context"], inputPerM: 0.11, outputPerM: 0.34, speed: "fast", quality: 0.6 } },
   { match: /llama.*(405b|90b|70b)/i, family: "Llama 70B+", profile: { level: "build", tags: ["code", "fast"], inputPerM: 0.59, outputPerM: 0.79, speed: "fast", quality: 0.6 } },
   { match: /llama.*(8b|3b|1b|instant)/i, family: "Llama 8B", profile: { level: "quick", tags: ["fast"], inputPerM: 0.05, outputPerM: 0.08, speed: "fast", quality: 0.4 } },
   { match: /qwen.*coder/i, family: "Qwen Coder", profile: { level: "build", tags: ["code"], inputPerM: 0.3, outputPerM: 0.9, speed: "normal", quality: 0.65 } },
   { match: /(qwq|qwen.*think)/i, family: "Qwen Reasoning", profile: { level: "deep", tags: ["reasoning", "code"], inputPerM: 0.3, outputPerM: 1.2, speed: "slow", quality: 0.7 } },
+  { match: /qwen/i, family: "Qwen", profile: { level: "build", tags: ["code", "reasoning"], inputPerM: 0.29, outputPerM: 0.59, speed: "normal", quality: 0.7 } },
   { match: /sonar/i, family: "Perplexity Sonar", profile: { level: "build", tags: ["web"], inputPerM: 1, outputPerM: 1, speed: "normal", quality: 0.7 } },
 ];
 

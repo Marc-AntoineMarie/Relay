@@ -69,8 +69,10 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     envKey: "GROQ_API_KEY",
     needsModelOverride: true,
     keyUrl: "https://console.groq.com/keys",
-    tierModels: { quick: "llama-3.1-8b-instant", build: "llama-3.3-70b-versatile", deep: "llama-3.3-70b-versatile" },
-    fallbackModels: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
+    // Catalogue 2026 (les Llama 3 ont été retirés) ; pas de modèle « deep » sur Groq.
+    tierModels: { quick: "openai/gpt-oss-20b", build: "openai/gpt-oss-120b", deep: "openai/gpt-oss-120b" },
+    fallbackModels: ["openai/gpt-oss-120b", "openai/gpt-oss-20b"],
+    reasoningEffort: true,
   },
   openrouter: {
     kind: "openai-compatible",
@@ -148,7 +150,7 @@ export function createProvider(name: string, options: CreateProviderOptions = {}
 
 /** Modèles qui ne font pas de chat texte (voix, image, vidéo, embeddings…). */
 const NON_CHAT =
-  /(tts|audio|speech|transcri|whisper|image|imagen|veo|video|embed|aqa|moderation|guard|nano-banana|robotics|computer-use|learnlm|native-audio)/i;
+  /(tts|audio|speech|transcri|whisper|orpheus|playai|image|imagen|veo|video|embed|aqa|moderation|guard|nano-banana|robotics|computer-use|learnlm|native-audio)/i;
 
 /** Garde les modèles de chat texte, alias « latest » en tête. */
 export function filterChatModels(ids: string[]): string[] {
