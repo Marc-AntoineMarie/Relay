@@ -183,7 +183,12 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i] as RouteCandidate;
       lastTried = c;
-      const outcome = yield* attempt(task, c, prompt, routing, runTask);
+      let outcome = yield* attempt(task, c, prompt, routing, runTask);
+      if (!("result" in outcome) && outcome.error instanceof ProviderRequestError && outcome.error.kind === "invalid_output") {
+        // Souvent aléatoire (outil inventé, réponse vide) : un second essai sur le même modèle.
+        yield log({ level: "warn", category: "fallback", taskId: task.id, title: `#${task.id} réponse inutilisable de ${c.model} → second essai` });
+        outcome = yield* attempt(task, c, prompt, routing, runTask);
+      }
       if ("result" in outcome) {
         attempts.push(outcome);
         failure = undefined;

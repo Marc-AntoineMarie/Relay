@@ -110,6 +110,12 @@ describe("politique des commandes", () => {
     expect(checkCommand("npm test", "safe").allowed).toBe(true);
     expect(checkCommand("python3 main.py", "ask")).toEqual({ allowed: true, needsApproval: true });
     expect(checkCommand("curl https://example.com", "auto").allowed).toBe(true);
+    // `timeout` : c'est le programme lancé qui est vérifié.
+    expect(checkCommand("timeout 5 python3 src/main.py", "safe").allowed).toBe(true);
+    expect(checkCommand("timeout -s KILL 5 python3 main.py", "safe").allowed).toBe(true);
+    expect(checkCommand("timeout 5 curl https://x", "safe").allowed).toBe(false);
+    expect(checkCommand('python3 -c "import a; print(1)" && ls', "safe").allowed).toBe(true);
+    expect(checkCommand('echo "ok" ; curl x', "safe").allowed).toBe(false);
   });
 
   it("exécute dans le dossier, sans secrets, avec un délai maximal", async () => {
@@ -298,6 +304,25 @@ describe("worker agentique", () => {
     expect(events.some((e) => e.type === "log" && e.entry.title.includes("pause"))).toBe(true);
     expect(events.at(-1)?.type).toBe("pipeline:done");
     expect(retryDelayMs(new ProviderRequestError("rate_limited", '"retryDelay": "41s"', "g"))).toBe(41_000);
+  });
+
+  it("app qui tourne encore au bout du délai (timeout → 124) : démarrage réussi, pas un échec", async () => {
+    const provider = scripted(() => '===RUN: timeout 1 python3 -c "import time; time.sleep(5)"===\nL\'app démarre.');
+    const p = pipeline(dir);
+    const events = await collect(execute({ pipeline: p, routing: routing(provider, ["m1"]), runTask: agenticRunTask({ workspace: new Workspace(dir), policy: "safe", maxIterations: 1 }) }));
+    expect(events.find((e) => e.type === "command:done" && e.exitCode === 124)).toBeDefined();
+    expect(p.tasks[0]?.output?.data?.["checksFailed"]).toBeUndefined();
+  });
+
+  it("réponse inutilisable : un second essai sur le même modèle avant de changer", async () => {
+    let calls = 0;
+    const provider = scripted(() => {
+      if (calls++ === 0) throw new ProviderRequestError("invalid_output", "Tool choice is none, but model called a tool", "fake", "m1", 400);
+      return "===FILE: ok.txt===\nok\n===END===\nFait.";
+    });
+    const events = await collect(execute({ pipeline: pipeline(dir), routing: routing(provider, ["m1"]), runTask: agenticRunTask({ workspace: new Workspace(dir), policy: "safe" }) }));
+    expect(events.some((e) => e.type === "log" && e.entry.title.includes("second essai"))).toBe(true);
+    expect(events.at(-1)?.type).toBe("pipeline:done");
   });
 
   it("escalade vers un modèle plus fort si les vérifications échouent encore", async () => {

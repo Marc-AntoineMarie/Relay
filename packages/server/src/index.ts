@@ -862,7 +862,8 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
   }
   const entries: PoolEntry[] = accounts
     .filter((a) => policies[a.name]?.enabled !== false)
-    .flatMap((a) => a.models.map((m) => ({ provider: a.name, model: m.model, billing: a.billing })));
+    // Ollama tourne souvent sur CPU (machine ou petit VPS) : lent, gardé pour quand rien d'autre ne répond.
+    .flatMap((a) => a.models.map((m) => ({ provider: a.name, model: m.model, billing: a.billing, ...(a.name === "ollama" ? { speed: "slow" as const } : {}) })));
   const router = new AutoRouter(entries, { strategy, policies, health, ...(budget !== null ? { budget } : {}) });
   const used = accounts.filter((a) => a.models.length > 0 && policies[a.name]?.enabled !== false).map((a) => a.label);
   sseWrite(res, { type: "mode", mode: "auto", strategy, accounts: used, poolSize: router.size });

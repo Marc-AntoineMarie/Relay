@@ -27,6 +27,10 @@ export interface ProviderPreset {
   fallbackModels?: string[];
   /** Le backend accepte `reasoning_effort` (budget de réflexion). */
   reasoningEffort?: boolean;
+  /** Délai max par requête (ms) ; défaut 60 s. Les modèles locaux sur CPU sont lents. */
+  timeoutMs?: number;
+  /** Variable d'environnement qui remplace `baseURL` (ex. Ollama sur un VPS, via tunnel SSH). */
+  baseURLEnv?: string;
 }
 
 const CLAUDE_TIERS: TierModels = { quick: "claude-haiku-4-5", build: "claude-sonnet-5-5", deep: "claude-opus-5-5" };
@@ -94,12 +98,69 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     tierModels: { quick: "deepseek-chat", build: "deepseek-chat", deep: "deepseek-reasoner" },
     fallbackModels: ["deepseek-chat"],
   },
+  nvidia: {
+    kind: "openai-compatible",
+    label: "NVIDIA (gratuit)",
+    billing: "free",
+    // Compte NVIDIA Developer : ~40 requêtes/min pour tout le compte, 100+ modèles ouverts.
+    baseURL: "https://integrate.api.nvidia.com/v1",
+    envKey: "NVIDIA_API_KEY",
+    needsModelOverride: true,
+    keyUrl: "https://build.nvidia.com/settings/api-keys",
+    tierModels: {
+      quick: "nvidia/nemotron-3.5-lightning-30b-a3b",
+      build: "deepseek-ai/deepseek-v4.1-flash",
+      deep: "moonshotai/kimi-k3",
+    },
+    fallbackModels: ["deepseek-ai/deepseek-v4-pro-0813", "nvidia/nemotron-3-ultra-550b-a55b"],
+    timeoutMs: 120_000,
+  },
+  cerebras: {
+    kind: "openai-compatible",
+    label: "Cerebras (gratuit)",
+    billing: "free",
+    baseURL: "https://api.cerebras.ai/v1",
+    envKey: "CEREBRAS_API_KEY",
+    needsModelOverride: true,
+    keyUrl: "https://cloud.cerebras.ai",
+  },
+  mistral: {
+    kind: "openai-compatible",
+    label: "Mistral (palier gratuit)",
+    billing: "free",
+    baseURL: "https://api.mistral.ai/v1",
+    envKey: "MISTRAL_API_KEY",
+    needsModelOverride: true,
+    keyUrl: "https://console.mistral.ai/api-keys",
+  },
+  huggingface: {
+    kind: "openai-compatible",
+    label: "Hugging Face (crédits gratuits)",
+    billing: "free",
+    baseURL: "https://router.huggingface.co/v1",
+    envKey: "HF_TOKEN",
+    needsModelOverride: true,
+    keyUrl: "https://huggingface.co/settings/tokens",
+  },
+  "ollama-cloud": {
+    kind: "openai-compatible",
+    label: "Ollama Cloud",
+    billing: "free",
+    baseURL: "https://ollama.com/v1",
+    envKey: "OLLAMA_API_KEY",
+    needsModelOverride: true,
+    keyUrl: "https://ollama.com/settings/keys",
+    timeoutMs: 120_000,
+  },
   ollama: {
     kind: "openai-compatible",
-    label: "Ollama (local)",
+    label: "Ollama (local ou VPS)",
     billing: "free",
-    baseURL: "http://localhost:11434/v1",
+    baseURL: "http://127.0.0.1:11434/v1",
+    baseURLEnv: "OLLAMA_BASE_URL",
     needsModelOverride: true,
+    // Sur CPU, une réponse longue prend plusieurs minutes.
+    timeoutMs: 600_000,
   },
 };
 
@@ -136,8 +197,9 @@ export function createProvider(name: string, options: CreateProviderOptions = {}
     case "openai-compatible":
       return new OpenAICompatibleProvider({
         name,
-        baseURL: preset.baseURL as string,
+        baseURL: (preset.baseURLEnv !== undefined ? env[preset.baseURLEnv]?.trim() : undefined) || (preset.baseURL as string),
         billing: preset.billing,
+        ...(preset.timeoutMs !== undefined ? { timeoutMs: preset.timeoutMs } : {}),
         ...(apiKey !== undefined ? { apiKey } : {}),
         ...(preset.structuredMode !== undefined ? { structuredMode: preset.structuredMode } : {}),
         ...(preset.fallbackModels !== undefined && options.fallbacks !== false
@@ -202,7 +264,15 @@ export function autoPoolModels(name: string, detected: string[]): string[] {
     const available = detected.length === 0 ? curated : curated.filter((m) => detected.includes(m));
     if (available.length > 0) return available;
   }
-  return detected.filter((m) => profileModel(m).known);
+  // Grands catalogues (NVIDIA, Hugging Face…) : les 2 meilleurs modèles connus par niveau.
+  const known = detected.filter((m) => profileModel(m).known);
+  const byLevel = new Map<string, string[]>();
+  for (const m of [...known].sort((a, b) => profileModel(b).quality - profileModel(a).quality)) {
+    const level = profileModel(m).level;
+    const list = byLevel.get(level) ?? [];
+    if (list.length < 2) byLevel.set(level, [...list, m]);
+  }
+  return [...byLevel.values()].flat();
 }
 
 export interface ProviderReadiness {

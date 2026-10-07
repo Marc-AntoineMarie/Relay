@@ -52,7 +52,7 @@ const DENY: RegExp[] = [
 const SAFE = new Set([
   "python", "python3", "pytest", "node", "deno", "go", "cargo", "rustc", "gcc", "g++", "cc", "clang",
   "make", "javac", "java", "ruby", "php", "npm", "ls", "cat", "echo", "head", "tail", "wc", "grep",
-  "find", "diff", "tree", "pwd", "true", "test", "sort", "uniq", "mkdir", "touch",
+  "find", "diff", "tree", "pwd", "true", "test", "sort", "uniq", "mkdir", "touch", "timeout",
 ]);
 
 export function checkCommand(command: string, policy: CommandPolicy): CommandCheck {
@@ -62,8 +62,10 @@ export function checkCommand(command: string, policy: CommandPolicy): CommandChe
   if (policy === "auto") return { allowed: true };
   if (policy === "ask") return { allowed: true, needsApproval: true };
 
-  for (const segment of command.split(/&&|\|\||;|\|/).map((s) => s.trim()).filter(Boolean)) {
-    const words = segment.split(/\s+/).filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+  for (const segment of splitSegments(command)) {
+    let words = segment.split(/\s+/).filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+    // `timeout 5 python3 app.py` : c'est le programme lancé qui compte.
+    if ((words[0] ?? "").replace(/^.*\//, "") === "timeout") words = words.slice(1).filter((w, i, all) => i > all.findIndex((x) => /^\d+(\.\d+)?[smh]?$/.test(x)));
     const program = (words[0] ?? "").replace(/^.*\//, "");
     if (!SAFE.has(program)) {
       return { allowed: false, reason: `« ${program} » n'est pas autorisé en mode Sûr (Réglages › Général pour changer)` };
@@ -73,6 +75,35 @@ export function checkCommand(command: string, policy: CommandPolicy): CommandChe
     }
   }
   return { allowed: true };
+}
+
+/** Découpe sur `&&`, `||`, `;`, `|` hors guillemets (`python3 -c "a; b"` reste un seul segment). */
+export function splitSegments(command: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let quote: string | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i] as string;
+    if (quote !== null) {
+      if (ch === "\\" && quote === '"' && i + 1 < command.length) {
+        cur += ch + command[++i];
+        continue;
+      }
+      if (ch === quote) quote = null;
+      cur += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      cur += ch;
+    } else if (ch === ";" || ch === "|" || (ch === "&" && command[i + 1] === "&")) {
+      if ((ch === "|" && command[i + 1] === "|") || ch === "&") i++;
+      out.push(cur);
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
 }
 
 /** Environnement sans secrets (clés API, jetons) pour les commandes des agents. */

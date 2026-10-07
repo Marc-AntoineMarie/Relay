@@ -41,9 +41,13 @@ Règles :
 - Chemins relatifs au dossier de travail. Écris toujours le fichier entier, jamais un extrait.
 - Pas de commande interactive ni de programme qui ne s'arrête pas seul ; pas d'installation
   de paquets : n'utilise que ce qui est installé (bibliothèque standard, ex. unittest en Python).
-- Si tu écris ou modifies le programme principal, vérifie qu'il démarre ici : au minimum
-  son import (ex. ===RUN: python3 -c "import calculatrice"===). Une fenêtre graphique ne
-  peut pas être ouverte ici : vérifie la logique, pas l'affichage.
+- Si tu écris ou modifies le programme principal, vérifie qu'il démarre avec la commande
+  EXACTE donnée à l'utilisateur (README, contrats), depuis la racine du projet — pas une
+  variante (« python3 -c "import …" » ne prouve pas que « python3 src/main.py » marche).
+  Programme qui ne s'arrête pas seul (fenêtre, jeu, serveur) : ===RUN: timeout 5 <commande>===
+  → « toujours en marche » = il démarre bien ; une erreur = à corriger.
+- Le programme doit se lancer par une commande simple depuis la racine, sans variable
+  d'environnement (ex. « python3 main.py », ou « python3 -m paquet.main »).
 - Après tes commandes, tu recevras leur sortie et pourras corriger. Si un test échoue, corrige
   le code plutôt que le test, sauf si le test est manifestement faux.
 - Termine par une phrase de résumé de ce que tu as fait.`;

@@ -22,6 +22,8 @@ export interface PoolEntry {
   provider: string;
   model: string;
   billing: BillingMode;
+  /** Vitesse réelle si elle diffère du profil (ex. Ollama sur un CPU modeste : lent). */
+  speed?: "fast" | "normal" | "slow";
 }
 
 /** Ce qu'un compte a le droit de faire en mode automatique. */
@@ -130,7 +132,9 @@ export class AutoRouter {
       if (policy?.disabledModels?.includes(entry.model) === true) continue;
       if (entry.billing === "per-token" && this.opts.budget !== undefined && this.spent >= this.opts.budget) continue;
 
-      const p = profileModel(entry.model);
+      const base = profileModel(entry.model);
+      const slow = entry.speed === "slow";
+      const p = slow ? { ...base, speed: "slow" as const, tags: base.tags.filter((t) => t !== "fast") } : base;
       const level = LEVEL[p.level];
       const degraded = level < required; // dernier recours seulement
       if (needs.includes("web") && !p.tags.includes("web")) continue; // le web ne s'improvise pas

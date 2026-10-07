@@ -127,9 +127,18 @@ export function agenticRunTask(opts: AgentOptions): RunTask {
       let failed = 0;
       for (const command of actions.runs) {
         const r = await runOne(command);
-        commands.push({ command, exitCode: r.exitCode });
-        if (r.exitCode !== 0) failed++;
-        const status = r.refused !== undefined ? `refusée : ${r.refused}` : r.timedOut ? "délai dépassé" : `code ${r.exitCode}`;
+        // `timeout N <app>` qui renvoie 124 : l'app tournait encore au bout de N s → elle démarre bien.
+        const stillRunning = r.exitCode === 124 && /^\s*timeout\s/.test(command);
+        commands.push({ command, exitCode: stillRunning ? 0 : r.exitCode });
+        if (r.exitCode !== 0 && !stillRunning) failed++;
+        const status =
+          r.refused !== undefined
+            ? `refusée : ${r.refused}`
+            : r.timedOut
+              ? "délai dépassé"
+              : stillRunning
+                ? "toujours en marche au bout du délai : démarrage réussi"
+                : `code ${r.exitCode}`;
         feedback.push(`### Commande \`${command}\` → ${status} (${(r.durationMs / 1000).toFixed(1)} s)\n\`\`\`\n${r.output || "(aucune sortie)"}\n\`\`\``);
       }
 

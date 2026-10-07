@@ -69,9 +69,11 @@ dépendances.
 
 10. Si l'utilisateur veut lancer, voir, essayer ou utiliser ce qui est créé, prévois un
     point d'entrée exécutable (programme principal en ligne de commande, ou interface
-    graphique si elle est demandée et possible avec les outils présents) et donne dans
-    "contracts" la commande pour le lancer. La tâche "verify" vérifie aussi que ce point
-    d'entrée démarre (au minimum son import), pas seulement les tests.
+    graphique si elle est demandée et possible avec les outils présents), lançable par une
+    commande simple depuis la racine du projet sans variable d'environnement (ex.
+    « python3 main.py »), et donne-la dans "contracts". La tâche "verify" lance cette
+    commande exacte (avec « timeout 5 » si le programme ne s'arrête pas seul), pas
+    seulement les tests.
 
 11. Rédige "analysis", les descriptions, "spec" et "contracts" dans la langue de la demande.
 
