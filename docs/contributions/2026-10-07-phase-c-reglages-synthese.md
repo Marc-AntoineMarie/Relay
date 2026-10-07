@@ -1,6 +1,6 @@
 # 2026-10-07 — Phase C : Réglages, synthèse finale, coûts honnêtes
 
-- **Statut** : en attente de validation par l'utilisateur
+- **Statut** : validée par l'utilisateur (« passe à la phase C, tout est parfait » pour B ; C validée le 2026-10-07 : « parfait, go phase D »)
 - **Commits** : `a18eca1` (moteur) · `c5f24d7` (serveur) · `224952a` (interface) · docs
 
 ## Demande

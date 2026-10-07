@@ -3,9 +3,25 @@
 Ce fichier documente le prompt que le décomposeur utilise pour transformer un prompt
 utilisateur en pipeline. C'est le cœur du produit — à itérer avec soin.
 
-Le code sera dans `packages/core/src/decomposer/system-prompt.ts`.
+Le code est dans `packages/core/src/decomposer/system-prompt.ts` (source de vérité ; ce
+fichier en garde l'esprit et l'historique).
 
-## Prompt v1
+## Historique
+
+- **v1** (socle) : règles 1 à 6.
+- **v2** (phase B) : règle 7, besoins par tâche (`needs`).
+- **v3** (phase D) : règle 6 nuancée (QUOI par défaut, `spec` pour le COMMENT essentiel),
+  **contrats partagés** (règle 8), actions réelles (règle 9), point d'entrée exécutable
+  (règle 10), langue de la demande (règle 11). Le contexte projet transmis au planificateur
+  indique le dossier neuf et les **outils réellement installés** (ex. pas de pytest → unittest).
+
+  *Pourquoi* : en réel, des tâches parallèles produisaient des pièces qui ne s'emboîtaient pas
+  (noms de fichiers, signatures) et le plan imposait des outils absents. Le QUOI reste la règle
+  (laisser le modèle exécutant choisir le COMMENT coûte moins de tokens et profite de ses
+  compétences), mais les **interfaces entre tâches** et les **pièges connus** doivent être fixés
+  une fois par le planificateur, sinon chaque agent les réinvente.
+
+## Prompt (v3)
 
 ```
 Tu es un planificateur de tâches pour un orchestrateur de pipeline agentique.
@@ -42,11 +58,27 @@ dépendances.
 5. Si la demande est trop vague pour produire un plan fiable, crée une seule tâche
    de type "clarify" avec tier "quick" qui liste les questions à poser.
 
-6. Décris chaque tâche en une phrase précise qui dit QUOI faire, pas COMMENT.
+6. Décris chaque tâche en une phrase précise qui dit QUOI faire (le résultat attendu,
+   vérifiable). Le COMMENT revient à l'agent qui l'exécute — sauf quand un détail précis
+   conditionne la réussite (algorithme imposé, cas limite, piège connu) : mets-le alors
+   dans "spec", en une ou deux phrases. Laisse "spec" vide sinon.
 
 7. Indique dans "needs" les besoins qui comptent vraiment pour la tâche (souvent aucun ou
    un seul) parmi : code, reasoning, long_context, web, fast. Le routeur automatique s'en
    sert pour choisir un modèle adapté (ajouté en phase B).
+
+8. Si plusieurs tâches produisent des pièces qui doivent s'emboîter (fichiers, modules,
+   fonctions, formats de données), fixe-les dans "contracts" : noms de fichiers, signatures
+   publiques, formats échangés, commandes de test. Court et factuel ; chaque agent le recevra.
+
+9. Les agents travaillent dans un vrai dossier : ils écrivent les fichiers et lancent les
+   commandes. Une tâche "verify" exécute réellement les tests. Pas d'installation de
+   paquets : n'utilise que les outils indiqués dans le contexte projet.
+
+10. Si l'utilisateur veut lancer, voir, essayer ou utiliser ce qui est créé, prévois un
+    point d'entrée exécutable et donne dans "contracts" la commande pour le lancer.
+
+11. Rédige "analysis", les descriptions, "spec" et "contracts" dans la langue de la demande.
 
 ## Format de sortie
 
@@ -59,6 +91,7 @@ Le schéma attendu (illustré en JSON) :
 
 {
   "analysis": "Une phrase sur ce que la demande implique",
+  "contracts": "src/search/index.ts exporte SearchEngine.search(query: string): Note[] ; tests : npm test",
   "tasks": [
     {
       "id": "1",
@@ -81,6 +114,7 @@ Le schéma attendu (illustré en JSON) :
       "type": "implement",
       "tier": "build",
       "description": "Implémenter la recherche full-text dans les notes markdown",
+      "spec": "Ignorer la casse et les accents ; ne pas indexer les blocs de code",
       "dependsOn": ["1", "2"],
       "expectedOutput": "Code fonctionnel de SearchEngine"
     }
@@ -101,6 +135,10 @@ Tu exécutes une tâche dans un pipeline. Voici le contexte :
 
 ## Ta tâche
 {task.description}
+Précisions : {task.spec}            ← si présent
+
+## Contrats partagés (à respecter exactement)   ← si le plan en a
+{pipeline.contracts}
 
 ## Résultats des tâches précédentes
 {résultats des tâches dont celle-ci dépend}
@@ -112,5 +150,10 @@ Tu exécutes une tâche dans un pipeline. Voici le contexte :
 - Fais exactement ce qui est demandé dans ta tâche, rien de plus.
 - Ton résultat sera utilisé par les tâches suivantes : sois précis et structuré.
 - Si tu produis du code, il doit compiler. Si tu produis des fichiers, liste-les.
-- Résume ton résultat en une phrase en début de réponse.
+- Résume ton résultat en une phrase.
 ```
+
+En mode agent (phase D), l'agent ajoute à ce prompt l'état du dossier de travail (liste des
+fichiers + contenu des petits fichiers) et le **protocole d'action** (`===FILE: chemin===` …
+`===END===`, `===RUN: commande===`, `===READ: chemin===`), voir
+`packages/core/src/workspace/protocol.ts`.

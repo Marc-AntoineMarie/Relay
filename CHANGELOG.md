@@ -11,7 +11,44 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/), versions 
 
 ## [Non publié] — 0.1.0 en cours
 
-### Phase C — Réglages, synthèse finale, coûts honnêtes · 2026-10-07 · *en attente de validation*
+### Phase D — actions réelles · 2026-10-07 · *en attente de validation*
+
+Commits `b8e2163` `5232b1f` `2110bda` `fc9e205` + docs · détail :
+[contribution](docs/contributions/2026-10-07-phase-d-actions-reelles.md)
+
+#### Ajouté
+
+- **Agent exécutant** : chaque tâche écrit de **vrais fichiers** dans un dossier neuf par run
+  (`~/relay-workspaces/…`, réglable) et **lance des commandes** (tests, exécution) ; il lit
+  les sorties et corrige (jusqu'à 4 tours). Protocole texte `===FILE===` / `===RUN===` /
+  `===READ===`, compatible avec tous les fournisseurs.
+- **Commandes encadrées** : politiques *Prudent* (validation de chaque commande), *Sûr*
+  (défaut, outils de dev), *Libre* ; liste noire dans tous les modes, clés API retirées de
+  l'environnement, 60 s max.
+- **Vérification + escalade** : si les vérifications échouent encore, la tâche est reprise une
+  fois par un modèle du niveau supérieur.
+- **Contrats partagés** (fichiers, signatures, commande de test) et **`spec`** par tâche dans
+  le plan ; point d'entrée exécutable quand l'utilisateur veut lancer le résultat ; le
+  planificateur connaît les outils installés.
+- Panneaux **Fichiers** (arbre + contenu en direct, runs précédents, ouvrir le dossier ou VS
+  Code) et **Exécution** (sorties des commandes, tes propres commandes avec entrée clavier,
+  lancement d'app graphique) ; bandeau de validation ; Réglages › Général : mode agent,
+  dossier, politique.
+- API : `POST /api/approve`, `GET /api/workspace/{runs,files,file}`,
+  `POST /api/workspace/{run,open}` ; événements `file:write`, `command:start|done`,
+  `task:escalate`, `workspace`, `approval:request|done`.
+
+#### Modifié
+
+- La synthèse décrit le dossier (arborescence, commandes, état des tests) au lieu de recopier
+  le code.
+- Robustesse face aux vrais modèles : réponse vide ou appel d'outil inventé → erreur
+  `invalid_output` → repli ; tâche qui ne fait que décrire → relancée ; blocs de fichiers
+  coupés ignorés ; **patience** sur les limites par minute (« réessaie dans 17 s ») ; jusqu'à 5
+  modèles essayés par tâche.
+- Disposition par défaut v4 (onglets Fichiers et Exécution).
+
+### Phase C — Réglages, synthèse finale, coûts honnêtes · 2026-10-07 · validée
 
 Commits `a18eca1` `c5f24d7` `224952a` + docs · détail :
 [contribution](docs/contributions/2026-10-07-phase-c-reglages-synthese.md)
