@@ -1,6 +1,6 @@
 # 2026-10-07 — Phase B : orchestrateur multi-comptes
 
-- **Statut** : en attente de validation par l'utilisateur
+- **Statut** : validée par l'utilisateur (2026-10-07)
 - **Commits** : `c32d07b` (moteur) · `6d3bf98` (serveur) · `f0093ac` (interface) · docs
 
 ## Demande

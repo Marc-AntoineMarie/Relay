@@ -44,5 +44,6 @@ Ce qui reste à faire ou à surveiller.
 
 | Date | Contribution | Statut |
 |---|---|---|
-| 2026-10-07 | [Phase B — orchestrateur multi-comptes](2026-10-07-phase-b-orchestrateur.md) | en attente de validation |
+| 2026-10-07 | [Phase C — Réglages, synthèse, coûts honnêtes](2026-10-07-phase-c-reglages-synthese.md) | en attente de validation |
+| 2026-10-07 | [Phase B — orchestrateur multi-comptes](2026-10-07-phase-b-orchestrateur.md) | validée |
 | 2026-10-06 → 07 | [Historique : du socle v0.1 à la phase A](2026-10-07-historique-avant-phase-b.md) | livré |

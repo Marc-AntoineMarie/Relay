@@ -11,7 +11,40 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/), versions 
 
 ## [Non publié] — 0.1.0 en cours
 
-### Phase B — orchestrateur multi-comptes · 2026-10-07 · *en attente de validation*
+### Phase C — Réglages, synthèse finale, coûts honnêtes · 2026-10-07 · *en attente de validation*
+
+Commits `a18eca1` `c5f24d7` `224952a` + docs · détail :
+[contribution](docs/contributions/2026-10-07-phase-c-reglages-synthese.md)
+
+#### Ajouté
+
+- **Écran ⚙ Réglages** : *Comptes et clés* (enregistrer, **tester** sans rien consommer,
+  supprimer, clé masquée `…KlvA`), *Modèles* (catalogue complet de chaque compte, ajout ou
+  retrait du pool automatique), *Routage* (mode et stratégie par défaut, **budget par run**,
+  synthèse, plafonds par compte), *Général*. Enregistrés côté moteur dans
+  `.relay/settings.json` (ignoré par git).
+- **Étape de synthèse** : à la fin du run, un modèle assemble tous les résultats en **un
+  livrable unique** (code final de chaque fichier + mode d'emploi), affiché dans le nouveau
+  panneau **Résultat** (copie en un clic, activé automatiquement).
+- **Budget par run** : une fois atteint, le routeur n'utilise plus que le gratuit et
+  l'abonnement.
+- Erreur **« requête trop volumineuse »** (HTTP 413, limite de tokens par minute des paliers
+  gratuits) : la tâche passe à un modèle à plus grand contexte au lieu d'échouer.
+- API : `GET|PUT /api/settings`, `POST /api/keys/test`, `POST /api/keys/delete`.
+
+#### Modifié
+
+- **Coûts honnêtes** : la planification (relances comprises) et la synthèse sont comptées dans
+  les totaux et la baseline, affichées à part (« dont orchestration ») ; avant, le plan
+  n'était pas compté.
+- Espace de travail réorganisé : la gestion des clés passe dans les Réglages, le choix du
+  compte du mode manuel est dans le panneau Modèles ; disposition par défaut v3.
+- Le graphe se recadre quand son panneau change de taille (sauf après un zoom manuel).
+- La raison affichée pour une tâche suit le modèle réellement tenté (premier choix ou repli).
+- **Groq** : catalogue 2026 (les Llama 3 ont été retirés) → `gpt-oss-20b` / `gpt-oss-120b` ;
+  familles GPT-OSS, Kimi, Llama 4 et Qwen ajoutées ; modèles vocaux filtrés.
+
+### Phase B — orchestrateur multi-comptes · 2026-10-07 · validée
 
 Commits `c32d07b` `6d3bf98` `f0093ac` + docs · détail :
 [contribution](docs/contributions/2026-10-07-phase-b-orchestrateur.md)
