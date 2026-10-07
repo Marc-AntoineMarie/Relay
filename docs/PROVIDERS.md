@@ -46,6 +46,19 @@ assumer dans l'onboarding.
 | Google Gemini | gamme Gemini (+ **palier gratuit**) | `GEMINI_API_KEY` | v0.2–v0.3 |
 | Perplexity | Sonar | `PERPLEXITY_API_KEY` | v0.3 |
 | OpenRouter | tous modèles (**fallback only**, marge) | `OPENROUTER_API_KEY` | v0.3 |
+| Groq | GPT-OSS, Llama 4, Kimi, Qwen (**palier gratuit**) | `GROQ_API_KEY` | testé (2026-10-07) |
+| DeepSeek | DeepSeek Chat / Reasoner (à l'usage, très bon marché) | `DEEPSEEK_API_KEY` | non testé |
+| **NVIDIA** (build.nvidia.com) | 100+ modèles ouverts : Kimi K3, DeepSeek V4, Nemotron, Llama, Qwen… (**gratuit** avec un compte NVIDIA Developer, ~40 req/min pour tout le compte) | `NVIDIA_API_KEY` (`nvapi-…`) | ajouté le 2026-10-08, à tester |
+| Cerebras | Llama, Qwen… très rapides (**palier gratuit**) | `CEREBRAS_API_KEY` | non testé |
+| Mistral | Mistral, Codestral… (**palier gratuit** « Experiment ») | `MISTRAL_API_KEY` | non testé |
+| Hugging Face | routeur vers de nombreux fournisseurs (**petits crédits gratuits**) | `HF_TOKEN` | non testé |
+| Ollama Cloud | modèles « cloud » d'Ollama (compte ollama.com) | `OLLAMA_API_KEY` | non testé |
+| Ollama (local ou VPS) | modèles ouverts sur ta machine ou ton serveur (**gratuit**) | — ; adresse via `OLLAMA_BASE_URL` (tunnel SSH vers un VPS) | phase F, voir [OLLAMA.md](OLLAMA.md) |
+
+Tous ces comptes passent par l'adaptateur compatible OpenAI ; les modèles sont détectés via
+`GET /models`. Pour les grands catalogues (NVIDIA, Hugging Face), le pool automatique prend
+la sélection du preset si elle est disponible, sinon les 2 meilleurs modèles **connus du
+catalogue** par niveau.
 
 Ajouter un fournisseur = **un adaptateur** (`packages/providers/src/<nom>.ts`) qui
 implémente l'interface `Provider`, **plus** des entrées dans le registre de modèles.

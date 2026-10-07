@@ -1,6 +1,6 @@
 # 2026-10-08 — Phase E : projets, conversations, questions de cadrage, mémoire
 
-- **Statut** : en attente de validation par l'utilisateur
+- **Statut** : validée (l'utilisateur est passé à la phase F)
 - **Commits** : `00a16fb` (moteur) · `d4c362c` (serveur + desktop) · `51ba955` (interface) · docs
 
 ## Demande

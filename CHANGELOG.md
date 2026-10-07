@@ -11,7 +11,29 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/), versions 
 
 ## [Non publié] — 0.1.0 en cours
 
-### Phase E — projets, conversations, questions, mémoire · 2026-10-08 · *en attente de validation*
+### Phase F — Ollama intégré, comptes gratuits, lancements vérifiés · 2026-10-08 · *en attente de validation*
+
+Commits `82f796e` `8864024` + docs · détail :
+[contribution](docs/contributions/2026-10-08-phase-f-ollama-et-comptes.md) · guide [OLLAMA.md](docs/OLLAMA.md)
+
+#### Ajouté
+
+- Comptes **NVIDIA** (100+ modèles gratuits : Kimi K3, DeepSeek V4, Nemotron…), **Cerebras**,
+  **Mistral**, **Hugging Face**, **Ollama Cloud** ; nouvelles familles au catalogue.
+- **Réglages › Ollama** : diagnostic de la machine et modèles conseillés ; installation en un clic
+  sans mot de passe (archive officielle, progression) ; démarrer / arrêter ; télécharger, tester,
+  supprimer des modèles ; **Ollama sur un VPS** (clé SSH générée, test, installation à distance,
+  tunnel SSH chiffré) ; guide Oracle Always Free ; Ollama Cloud.
+
+#### Corrigé
+
+- Les agents vérifiaient une variante (`python3 -c "import …"`) au lieu de la vraie commande de
+  lancement : ils lancent maintenant la commande exacte (`timeout 5` pour une app qui reste
+  ouverte) ; une correction doit être vérifiée.
+- Réponse inutilisable : second essai sur le même modèle avant le repli.
+- Commandes avec `;` entre guillemets refusées à tort en mode Sûr.
+
+### Phase E — projets, conversations, questions, mémoire · 2026-10-08 · validée
 
 Commits `00a16fb` `d4c362c` `51ba955` + docs · détail :
 [contribution](docs/contributions/2026-10-08-phase-e-projets-conversations.md)
