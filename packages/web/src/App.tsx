@@ -25,12 +25,30 @@ export default function App(): React.JSX.Element {
   const [keyDraft, setKeyDraft] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    getState()
-      .then((s) => {
-        setState(s);
-        setProvider(s.defaultProvider);
-      })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+    let cancelled = false;
+    let timer: number | undefined;
+    const load = (): void => {
+      getState()
+        .then((s) => {
+          if (cancelled) return;
+          setState(s);
+          setProvider(s.defaultProvider);
+          setError(null);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setError(
+            "Le serveur local Relay ne répond pas. Lance `pnpm server` dans un autre terminal " +
+              "(ou `pnpm dashboard`). Reconnexion automatique…",
+          );
+          timer = window.setTimeout(load, 2000);
+        });
+    };
+    load();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
   }, []);
 
   const selected = useMemo(
