@@ -44,6 +44,10 @@ dépendances.
 
 6. Décris chaque tâche en une phrase précise qui dit QUOI faire, pas COMMENT.
 
+7. Indique dans "needs" les besoins qui comptent vraiment pour la tâche (souvent aucun ou
+   un seul) parmi : code, reasoning, long_context, web, fast. Le routeur automatique s'en
+   sert pour choisir un modèle adapté (ajouté en phase B).
+
 ## Format de sortie
 
 > **Implémentation :** ne pas compter sur « réponds en JSON » seul, ni sur un

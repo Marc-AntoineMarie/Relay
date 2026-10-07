@@ -3,6 +3,14 @@
 Un prompt → décomposition automatique → routing intelligent → exécution chaînée → métriques.
 Desktop, web et mobile.
 
+## Reprise du projet et suivi
+
+- **Nouvelle session : lire d'abord [docs/HANDOFF.md](docs/HANDOFF.md)** — état, commandes,
+  pièges connus, règles de travail, prochaine étape.
+- À chaque contribution, dans le même commit : [CHANGELOG.md](CHANGELOG.md) + une fiche dans
+  [docs/contributions/](docs/contributions/README.md) + `docs/HANDOFF.md` si l'état change.
+- Travailler par phases et s'arrêter en fin de phase pour validation de l'utilisateur.
+
 ## Stack technique
 
 - TypeScript strict, monorepo pnpm (`packages/`)

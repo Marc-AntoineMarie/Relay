@@ -1,199 +1,95 @@
 # Changelog
 
-Toutes les modifications notables du projet sont consignées ici.
-
+Toutes les modifications notables de Relay, regroupées par étape, la plus récente en haut.
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/), versions en
-[SemVer](https://semver.org/lang/fr/). **Ce fichier est mis à jour à chaque changement**,
-en même temps que le commit correspondant (un bloc par commit, le plus récent en haut).
+[SemVer](https://semver.org/lang/fr/).
 
-## [Non publié] — v0.1.0 en cours (+ début dashboard v0.3)
+- **Ce fichier est mis à jour à chaque changement**, dans le même commit.
+- Le **détail** de chaque contribution (pourquoi, fichiers, comment tester, décisions) est
+  dans [`docs/contributions/`](docs/contributions/README.md).
+- Pour reprendre le projet dans une nouvelle session : [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
-### 2026-10-07 — phase A : espace de travail en panneaux libres
+## [Non publié] — 0.1.0 en cours
 
-- **Panneaux indépendants** (dockview) : Comptes, Demande, Modèles, Pipeline, Tâche,
-  Coûts. Chacun se déplace (glisser l'onglet à gauche/droite/haut/bas ou dans un autre
-  groupe pour l'empiler), se redimensionne seul, s'agrandit ; disposition mémorisée,
-  bouton « Disposition par défaut ». Pipeline et Tâche ne sont plus liés en taille.
-- **Graphe zoomable** : molette (autour du curseur), glisser le fond pour se déplacer,
-  `+ − Ajuster`, double-clic pour recadrer, cadrage auto à l'arrivée du plan uniquement
-  (pas à chaque changement de statut).
-- **Architecture front** : état partagé dans un contexte (`store.tsx`), panneaux dans
-  `panels.tsx`, coquille dans `App.tsx`. Cartes de coûts compactées, géométrie des
-  nœuds resserrée pour la lisibilité.
-- Vérifié visuellement (capture Electron) + run réel piloté depuis l'UI (5 tâches, 48 s).
-- Dépendance ajoutée : `dockview-react` (agencement façon IDE ; justifiée vs ~1 000
-  lignes à réécrire).
+### Phase B — orchestrateur multi-comptes · 2026-10-07 · *en attente de validation*
 
-### 2026-10-07 — fiabilisation : modèles, erreurs, front
+Commits `c32d07b` `6d3bf98` `f0093ac` + docs · détail :
+[contribution](docs/contributions/2026-10-07-phase-b-orchestrateur.md)
 
-Premier pipeline réel de bout en bout validé (Gemini gratuit : 4/4 tâches, $0, repli
-automatique sur modèle saturé).
+#### Ajouté
 
-- **Décomposeur robuste** : extraction JSON tolérante (blocs ```json, texte autour),
-  troncature détectée (`stop: length`) → budget de tokens doublé, JSON/plan invalide →
-  relance de réparation avec l'erreur (3 tentatives), ids numériques acceptés.
-- **Erreurs normalisées** (`core/errors.ts`) : `ProviderRequestError` (auth, modèle retiré,
-  quota, saturé, timeout, requête refusée, réseau) + `describeError` (titre, détail,
-  conseil en français). Utilisées par les providers, le serveur, le CLI et l'UI.
-- **Gestion des modèles** : un modèle par tier pour chaque backend (alias « latest » pour
-  Gemini, jamais dépréciés), repli automatique si saturé/retiré (sans retenter le modèle
-  saturé), modèle réellement servi tracé dans les métriques, effort → `reasoning_effort`
-  (budget de réflexion), filtrage des modèles non-chat (voix, image, embeddings),
-  suggestion par tier validée contre les modèles détectés.
-- **Serveur** : routage par tier appliqué à la config, `/api/models` filtré + suggéré,
-  erreurs décrites, arrêt du pipeline quand le client coupe.
-- **Front** : sélecteur de modèle par tier (Quick / Build / Deep) avec badge
-  « recommandé », carte d'erreur (titre, détail, conseil, Réessayer / modèles
-  recommandés), étapes + chrono pendant l'exécution, bouton Arrêter, métriques toujours
-  visibles, panneau de détail par tâche (modèle servi, repli, coût, tokens, sortie),
-  préférences mémorisées (backend, modèles), Ctrl+Entrée pour lancer.
-- **Desktop** : port fixe 47474 (repli sur port libre) pour garder les préférences.
-- **Tests** : 67 (robustesse décomposeur, erreurs, filtrage/suggestion, repli simulé).
+- **Mode automatique** (par défaut) : pour le plan puis pour chaque tâche, le routeur choisit
+  le compte et le modèle parmi **tous les comptes connectés** ; mode **manuel** conservé.
+- **Stratégies** Économie / Équilibré / Qualité (pondération coût, qualité, vitesse,
+  sur-dimensionnement, coût virtuel de l'abonnement).
+- **Besoins par tâche** (`code`, `reasoning`, `long_context`, `web`, `fast`) attribués par le
+  planificateur, en plus des 3 niveaux quick / build / deep.
+- **Catalogue de modèles** (`core/catalog.ts`) : niveau, besoins couverts, prix de référence,
+  vitesse et qualité par famille (Claude, Gemini, Llama, DeepSeek, Qwen, Sonar).
+- **Plafonds par compte** : activé ou non, niveaux autorisés, nombre max d'appels par run.
+  Par défaut **Claude Code est désactivé** en auto (quota préservé), l'API Anthropic est
+  réservée au « deep ».
+- **Santé des modèles** : un modèle saturé / à court de quota est évité quelques minutes, un
+  modèle retiré ou non inclus dans l'offre est écarté une heure.
+- **Repli entre fournisseurs** : si un modèle échoue, la tâche passe au candidat suivant,
+  éventuellement chez un autre compte ; la raison de chaque choix est affichée.
+- **Journal lisible** (panneau « Journal ») : une ligne par action (plan, routage, requête,
+  réponse, repli, erreur), détail brut dépliable, filtres, recherche, vue brute, export JSONL.
+- API serveur : `GET /api/pool`, `POST /api/run` avec `mode: "auto"`.
 
-### (ce commit) — feat: app desktop Electron (v0.4 avancée)
+#### Modifié
 
-- **`packages/desktop`** : app Electron. Le processus principal démarre le moteur
-  (serveur local **en interne**, sur un port libre) et ouvre une fenêtre dessus →
-  **aucune config réseau** (plus de port, plus de souci localhost/IPv6, plus de serveur
-  à lancer à part). Liens externes ouverts dans le navigateur système, rendu logiciel
-  pour éviter les crashs GPU.
-- **`@relay/server`** : `startServer({ port })` renvoie le port réel + un `close()` ;
-  auto-démarrage seulement en CLI (pas à l'import). Ajout de `main`/`exports`.
-- **Script racine** : `pnpm desktop` (build + lance la fenêtre).
-- **`pnpm.onlyBuiltDependencies`** : autorise le postinstall d'Electron/esbuild (sinon le
-  binaire Electron ne s'installe pas).
+- L'exécuteur route via `TaskRouting` (manuel ou automatique) ; le coût « équivalent API » est
+  calculé via le catalogue pour tous les backends (plus seulement Claude).
+- Un modèle de niveau inférieur n'est utilisé qu'en **dernier recours**, signalé, quand aucun
+  modèle du bon niveau ne répond (au lieu d'échouer).
 
-### fix: serveur accessible en IPv4 **et** IPv6 (localhost)
+#### Corrigé
 
-- Le serveur écoutait seulement en IPv4 (`127.0.0.1`) → `localhost` résolu en `::1`
-  donnait « site inaccessible ». Désormais écoute dual-stack.
-- Gestion claire de `EADDRINUSE` (port occupé → message + `RELAY_PORT`), logs de
-  démarrage explicites, capture des exceptions non gérées.
+- « quota limit: 0 » (modèle non inclus dans le palier gratuit, ex. Gemini Pro) est traité
+  comme modèle indisponible, et plus comme un quota temporaire.
 
-### feat: dashboard web React + Vite
+### Phase A — espace de travail en panneaux libres · `934801c`
 
-- **`packages/web`** : app React + Vite, **dark mode**. Panneau latéral « Backends &
-  clés » (voyant prêt/en attente, saisie de clé → `.env` côté serveur, lien pour obtenir
-  une clé gratuite), carte « Run » (prompt + modèle), **DAG visuel** (nœuds + flèches par
-  colonnes de dépendance, statut en direct, modèle + coût par nœud), barre de métriques
-  (payé vs équivalent API, économies routage et facturation, tokens, durée).
-- Flux temps réel via SSE (`/api/run`) ; en dev, proxy Vite `/api` → serveur local.
-- **Scripts racine** : `pnpm dashboard` (build + lance), `pnpm web:dev`.
+- Six panneaux indépendants (dockview) : déplacer, empiler, redimensionner, agrandir ;
+  disposition mémorisée, bouton « Disposition par défaut ».
+- Graphe zoomable : molette, glisser le fond pour se déplacer, « Ajuster ».
 
+### Fiabilisation : modèles, erreurs, front · `d0a73ff` `885179e` `57b07b2` `1c4f4f5` `25efea7` `2014df7` `8f35ca1`
 
-### (ce commit) — feat: serveur local + fabrique de providers partagée
+- Décomposeur robuste : extraction JSON tolérante, troncature détectée, relances de réparation.
+- Erreurs normalisées (`ProviderRequestError`, `describeError`) : titre, détail, conseil.
+- Un modèle par tier pour chaque backend, repli automatique, effort → `reasoning_effort`,
+  filtrage des modèles non-chat, détection des modèles disponibles avec la clé.
+- Front : sélecteur par tier, carte d'erreur avec actions, chrono, bouton Arrêter, détail
+  par tâche ; timeout 60 s sur les backends compatibles OpenAI.
 
-- **`providers/factory.ts`** : `createProvider(name)`, `PROVIDER_PRESETS` (anthropic,
-  claude-code, gemini, groq, openrouter, deepseek, ollama) et `providerReadiness()`
-  (quels backends sont prêts). Mutualise la logique entre CLI et serveur.
-- **`packages/server`** : serveur local Node (127.0.0.1) exposant le moteur à l'UI —
-  `GET /api/state`, `POST /api/keys` (écrit `.env` côté machine), `POST /api/run` (SSE).
-  Sert l'app web buildée si présente. Les clés ne quittent jamais la machine.
-- **CLI** : utilise la fabrique partagée (suppression de la duplication des presets).
+### App desktop Electron · `90a09c8` `b18d2c1`
 
----
+- Fenêtre native : le serveur démarre dans le processus Electron (plus de port à gérer).
+- Chemins (UI, `.env`, config) résolus depuis la racine du dépôt quel que soit le dossier courant.
 
+### Dashboard web + serveur local · `e5981e9` `ce907ee` `280c049` `1de43e5`
 
-Proof of concept CLI : un prompt → décomposition → routing → exécution → métriques.
-Multi-backend : API Anthropic, Claude Code (abonnement), et tous les backends compatibles
-OpenAI (Gemini, Groq, OpenRouter, DeepSeek, Ollama…). Exécution séquentielle.
+- Serveur local (`/api/state`, `/api/keys`, `/api/run` en SSE), clés écrites dans `.env`.
+- Dashboard React + Vite sombre : backends, DAG, métriques.
+- Écoute IPv4 + IPv6, gestion du port occupé, reconnexion automatique de l'UI.
 
-### (ce commit) — feat: provider compatible OpenAI + backends gratuits de test
+### Multi-backend · `ced1fcb` `3acf9af` `0c9728e`
 
-- **`providers/openai-compatible.ts`** : `OpenAICompatibleProvider`, un seul adaptateur
-  pour tout backend exposant l'API Chat Completions (Gemini, Groq, OpenRouter, DeepSeek,
-  Qwen, Ollama, OpenAI). `baseURL` + `apiKey` + `billing` configurables ; mapping des
-  paramètres en fonction pure testable (`buildChatParams`), structured outputs via
-  `json_object` (portable) ou `json_schema` strict.
-- **Décomposeur portable** : le schéma JSON est aussi inscrit dans le prompt → les
-  backends sans structured outputs natifs produisent quand même la bonne structure.
-- **CLI** : presets `--provider gemini|groq|openrouter|deepseek|ollama` + `--model <id>`
-  (force un modèle unique, requis hors Claude). Messages d'erreur guidés (clé/`--model`).
-- **`.env.example`** : clés des backends gratuits documentées.
-- **But** : tester **gratuitement**, sans consommer le quota Claude Code.
-- **Tests** : `buildChatParams` (5). Total : 48 tests verts.
+- Métriques comparables entre backends : `billedCost` (payé) et `referenceCost` (équivalent API).
+- Provider **Claude Code** (abonnement, sans clé API) et provider **compatible OpenAI**
+  (Gemini, Groq, OpenRouter, DeepSeek, Ollama…).
 
-### `ced1fcb` + (ce commit) — feat: provider Claude Code + métriques multi-backend
+### Socle v0.1 (étapes 1 → 10) · `413e235` → `dd3a3a3`, `1d55ea6`, `4ec51ac`
 
-- **`providers/claude-code.ts`** : `ClaudeCodeProvider` pilote le binaire `claude` en
-  `-p` (abonnement, sans clé API). Modèle par tâche via `--model`, JSON du décomposeur
-  via `--json-schema`, progression via `--output-format stream-json`. Parsing stream-json
-  en fonction pure testable (`interpretStreamJsonLine`). Sûr par défaut
-  (`permissionMode: "none"`, `--restricted`).
-- **Métriques multi-backend** : `Provider.billing` (`per-token` | `subscription` | `free`) ;
-  `TaskMetrics` passe de `cost` à `referenceCost` (tarif API, échelle commune) +
-  `billedCost` (réel, 0 sur abonnement) ; `PipelineMetrics` → `totalBilledCost` +
-  `totalReferenceCost`. Permet de **prouver l'économie même sans facturation en $**.
-- **CLI** : option `--provider anthropic|claude-code` + fabrique de provider ; affiche le
-  backend, le coût payé **et** le coût équivalent API.
-- **Tests** : parseur stream-json + métadonnées provider (8).
-
-### `dd3a3a3` — feat: config, moniteur et CLI de bout en bout (étapes 7 et 9)
-
-- **`core/config.ts`** : chargement de `relay.config.json`, substitution des `${ENV}`
-  (clés API jamais en clair), validation Zod (`parseConfig`, `loadConfig`, `ConfigError`).
-- **`core/monitor/`** : `Monitor`, un `EventEmitter` typé (`onAny`, `on(type)`, `pipe`)
-  pour les consommateurs qui préfèrent les callbacks au flux `AsyncGenerator`.
-- **`cli/`** : commande `relay "prompt"` complète — charge `.env`, vérifie la clé API,
-  décompose, exécute, affiche le plan puis les métriques ; messages d'erreur clairs.
-- **Tests** : config (5), moniteur (4) ; smoke tests CLI (version/aide/clé manquante).
-
-### `d514534` — feat(core): exécuteur + calcul des métriques (étapes 6 et 8)
-
-- **`core/executor/`** : parcours topologique du DAG, chaînage des résultats entre
-  tâches, événements typés (`AsyncGenerator<PipelineEvent>`), gestion d'échec.
-  Point d'injection `runTask` prévu pour le futur **worker agentique** (fichiers + shell).
-- **`core/metrics/`** : `computePipelineMetrics` (coûts, tokens, durée, baseline, économies).
-- **Tests** : exécuteur + métriques (8), provider mocké, sans réseau.
-
-### `a41688f` — feat(core): routeur piloté par registre + escalade (étape 5)
-
-- **`core/registry.ts`** : registre central des modèles (prix, capacités) — source unique
-  partagée par le routeur et les providers.
-- **`core/router/`** : `assign()` par tier, `escalate()` (« effort d'abord puis modèle »),
-  `validate()` des modèles de route.
-- **`providers/anthropic`** : pointe désormais sur le registre central (fin de la
-  duplication `MODELS`).
-- **Tests** : routeur + registre (10).
-
-### `4245fb2` — feat(core): décomposeur avec structured outputs (étape 4)
-
-- **`core/decomposer/`** : schéma Zod du plan, `decompose()` via **structured outputs**
-  (JSON garanti conforme), validation (JSON, schéma, dépendances inexistantes, cycles),
-  prompt système + constructeur de prompt worker.
-- **`core/types`** : `CompletionRequest.format` (`StructuredFormat`) pour la sortie structurée.
-- **`providers/anthropic`** : câblage de `output_config.format` (fusion avec `effort`).
-- **Tests** : décomposeur (7), provider mocké.
-
-### `4ec51ac` — docs: stratégie multi-fournisseurs (clés API, zéro marge)
-
-- **`docs/PROVIDERS.md`** : appel direct par clé utilisateur, registre de modèles,
-  politique de routage « compétent + moins cher », abonnements non routables, temps réel.
-- Mises à jour de `CLAUDE.md`, `ARCHITECTURE.md`, `PRODUCT.md`.
-
-### `12a0871` — feat(providers): adaptateur Anthropic sur le SDK officiel (étape 3)
-
-- **`providers/anthropic.ts`** : `complete()` en streaming (`AsyncIterable<CompletionChunk>`),
-  `estimateCost()` (prix réels), `countTokens()` ; gestion par modèle de l'`effort` et du
-  thinking adaptatif (Haiku exclu), split system/messages.
-- **Tests** : coût et catalogue (6), sans réseau.
-
-### `20b1d4e` — feat(core): types partagés du pipeline (étape 2)
-
-- **`core/types.ts`** : `Pipeline`, `Task`, `TaskIO`, `Provider`, `CompletionRequest/Chunk`,
-  `PipelineEvent`, `TaskMetrics`, `PipelineMetrics`, `RelayConfig`. `effort` optionnel
-  (Haiku), type de tâche `clarify`, `CompletionChunk` en union discriminée.
-
-### `413e235` — chore(repo): monorepo pnpm + corrections doc (étape 1)
-
-- Monorepo pnpm (`core`, `providers`, `cli`), tsconfig strict + project references, Vitest.
-- `.env.example`, `.gitignore`, `relay.config.json`.
-- Corrections doc vérifiées contre l'API : IDs de modèles, `effort` non envoyé pour Haiku,
-  structured outputs pour le décomposeur, SQLite repoussé en v0.2, worker = agent exécutant.
+- Monorepo pnpm (core, providers, cli), types partagés, adaptateur Anthropic, décomposeur
+  (structured outputs), routeur + escalade, exécuteur, métriques, moniteur, config, CLI.
+- Documentation multi-fournisseurs (`docs/PROVIDERS.md`) et premier CHANGELOG.
 
 ---
 
 ### Environnement
 
-- Node ≥ 22, pnpm 9. Stack datée 2026 : zod 4, TypeScript 7, vitest 5,
-  `@anthropic-ai/sdk` 0.131.
+Node ≥ 22, pnpm 9. Stack datée 2026 : zod 4, TypeScript 7, vitest 5, React 19, Vite 8,
+Electron 44, `@anthropic-ai/sdk` 0.131, `openai` 7.30, `dockview-react` 8.4.
