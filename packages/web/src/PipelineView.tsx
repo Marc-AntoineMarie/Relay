@@ -141,14 +141,33 @@ export function ZoomableDag(props: DagProps): React.JSX.Element {
     setView({ scale, x: (el.clientWidth - layout.width * scale) / 2, y: (el.clientHeight - layout.height * scale) / 2 });
   }, [layout]);
 
-  useEffect(() => fit(), [fit]);
+  // Nouveau plan : recadrage. L'utilisateur reprend la main dès qu'il zoome ou déplace.
+  const userAdjusted = useRef(false);
+  const refit = useCallback(() => {
+    userAdjusted.current = false;
+    fit();
+  }, [fit]);
+  useEffect(() => refit(), [refit]);
 
   const hasPlan = views.length > 0;
+
+  // Panneau redimensionné : on recadre tant que l'utilisateur n'a pas ajusté lui-même.
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (el === null || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (!userAdjusted.current) fit();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fit, hasPlan]);
+
   useEffect(() => {
     const el = viewportRef.current;
     if (el === null) return;
     const onWheel = (e: WheelEvent): void => {
       e.preventDefault();
+      userAdjusted.current = true;
       const rect = el.getBoundingClientRect();
       const px = e.clientX - rect.left;
       const py = e.clientY - rect.top;
@@ -162,6 +181,7 @@ export function ZoomableDag(props: DagProps): React.JSX.Element {
   }, [hasPlan]);
 
   const zoomBy = (factor: number): void => {
+    userAdjusted.current = true;
     const el = viewportRef.current;
     const cx = (el?.clientWidth ?? 0) / 2;
     const cy = (el?.clientHeight ?? 0) / 2;
@@ -184,7 +204,7 @@ export function ZoomableDag(props: DagProps): React.JSX.Element {
         <button onClick={() => zoomBy(1 / 1.2)} aria-label="Dézoomer">
           −
         </button>
-        <button onClick={fit}>Ajuster</button>
+        <button onClick={refit}>Ajuster</button>
         <span className="muted small">{Math.round(view.scale * 100)} %</span>
       </div>
       <div
@@ -192,6 +212,7 @@ export function ZoomableDag(props: DagProps): React.JSX.Element {
         className="zoom-viewport"
         onPointerDown={(e) => {
           if ((e.target as Element).closest(".node, .zoom-tools") !== null) return;
+          userAdjusted.current = true;
           drag.current = { x: e.clientX, y: e.clientY, ox: view.x, oy: view.y };
           e.currentTarget.setPointerCapture(e.pointerId);
         }}
@@ -203,7 +224,7 @@ export function ZoomableDag(props: DagProps): React.JSX.Element {
         onPointerUp={() => {
           drag.current = null;
         }}
-        onDoubleClick={(e) => (e.target as Element).closest(".node") === null && fit()}
+        onDoubleClick={(e) => (e.target as Element).closest(".node") === null && refit()}
       >
         <div
           className="zoom-content"

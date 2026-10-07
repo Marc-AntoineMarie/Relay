@@ -1,56 +1,13 @@
 /**
- * Panneaux du dashboard. Chacun est rendu par dockview dans son propre conteneur
- * (déplaçable, redimensionnable, empilable) et lit l'état partagé via `useRelay`.
+ * Panneaux de l'espace de travail. Chacun est rendu par dockview dans son propre
+ * conteneur (déplaçable, redimensionnable, empilable) et lit l'état partagé via
+ * `useRelay`. La gestion des comptes et des clés est dans les Réglages.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MetricsBar, Segmented, TaskDetail, TierPicker } from "./components";
+import { MetricsBar, Segmented, TaskDetail, TierPicker, money } from "./components";
 import { ZoomableDag } from "./PipelineView";
 import { BILLING, useRelay, type Relay } from "./store";
-import { TIERS, type LogEntry, type Phase, type PoolAccount, type Strategy, type Tier } from "./types";
-
-export function AccountsPanel(): React.JSX.Element {
-  const r = useRelay();
-  return (
-    <div className="panel">
-      <p className="muted small">
-        Connecte tes comptes. Les clés restent sur ta machine (fichier .env).
-        {r.mode === "manual" ? " En mode manuel, clique sur le compte à utiliser." : ""}
-      </p>
-      <ul className="providers">
-        {r.state?.providers.map((p) => (
-          <li key={p.name} className={`provider ${r.mode === "manual" && p.name === r.provider ? "active" : ""}`}>
-            <button className="provider-pick" onClick={() => r.chooseProvider(p.name)} disabled={r.busy}>
-              <span className={`dot ${p.ready ? "dot-done" : "dot-pending"}`} />
-              <span className="provider-label">{p.label}</span>
-              <span className={`billing billing-${p.billing}`}>{BILLING[p.billing]}</span>
-            </button>
-            {p.envKey !== undefined ? (
-              <div className="key-row">
-                <input
-                  type="password"
-                  placeholder={p.ready ? "clé enregistrée · remplacer" : `colle ta clé ${p.envKey}`}
-                  value={r.keyDraft[p.name] ?? ""}
-                  onChange={(e) => r.setKeyDraft((d) => ({ ...d, [p.name]: e.target.value }))}
-                  onKeyDown={(e) => e.key === "Enter" && void r.saveKey(p.name)}
-                />
-                <button onClick={() => void r.saveKey(p.name)} disabled={!(r.keyDraft[p.name] ?? "").trim()}>
-                  OK
-                </button>
-              </div>
-            ) : (
-              <div className="muted small no-key">aucune clé requise</div>
-            )}
-            {!p.ready && p.keyUrl !== undefined ? (
-              <a className="small key-link" href={p.keyUrl} target="_blank" rel="noreferrer">
-                Obtenir une clé →
-              </a>
-            ) : null}
-          </li>
-        )) ?? <li className="muted">chargement…</li>}
-      </ul>
-    </div>
-  );
-}
+import type { LogEntry, Phase, Strategy } from "./types";
 
 export function ComposerPanel(): React.JSX.Element {
   const r = useRelay();
@@ -128,16 +85,47 @@ function AutoRouting({ r }: { r: Relay }): React.JSX.Element {
       </div>
 
       <div className="field">
-        <span className="field-label">Comptes utilisés</span>
+        <span className="field-label">
+          Comptes utilisés
+          <button className="link" onClick={() => r.openSettings("routing")}>
+            plafonds, budget…
+          </button>
+        </span>
         {r.pool === null ? (
           <span className="muted small">chargement du pool…</span>
         ) : r.pool.accounts.length === 0 ? (
-          <span className="muted small">Aucun compte prêt : ajoute une clé dans le panneau Comptes.</span>
+          <span className="muted small">
+            Aucun compte prêt.{" "}
+            <button className="link" onClick={() => r.openSettings("accounts")}>
+              Ajouter une clé
+            </button>
+          </span>
         ) : (
-          <ul className="accounts">
-            {r.pool.accounts.map((a) => (
-              <AccountRow key={a.name} account={a} r={r} />
-            ))}
+          <ul className="accounts compact">
+            {r.pool.accounts.map((a) => {
+              const policy = r.policyOf(a.name);
+              return (
+                <li key={a.name} className={`account ${policy.enabled ? "" : "account-off"}`}>
+                  <label className="account-head">
+                    <input
+                      type="checkbox"
+                      checked={policy.enabled}
+                      disabled={r.busy || a.models.length === 0}
+                      onChange={(e) => r.setPolicy(a.name, { ...policy, enabled: e.target.checked })}
+                    />
+                    <span className="provider-label">{a.label}</span>
+                    <span className={`billing billing-${a.billing}`}>{BILLING[a.billing]}</span>
+                  </label>
+                  <span className="muted small">
+                    {a.error !== undefined
+                      ? `⚠ ${a.error.title}`
+                      : `${a.models.map((m) => `${m.model}${m.health ? ` (${m.health})` : ""}`).join(" · ") || "aucun modèle"}${
+                          policy.levels !== undefined && policy.levels.length < 3 ? ` — niveaux : ${policy.levels.join(", ")}` : ""
+                        }`}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
@@ -163,97 +151,43 @@ function AutoRouting({ r }: { r: Relay }): React.JSX.Element {
   );
 }
 
-function AccountRow({ account: a, r }: { account: PoolAccount; r: Relay }): React.JSX.Element {
-  const policy = r.policyOf(a.name);
-  const levels: Tier[] = policy.levels ?? [...TIERS];
-  const toggleLevel = (t: Tier): void => {
-    const next = levels.includes(t) ? levels.filter((l) => l !== t) : [...levels, t];
-    r.setPolicy(a.name, { ...policy, levels: TIERS.filter((l) => next.includes(l)) });
-  };
-  return (
-    <li className={`account ${policy.enabled ? "" : "account-off"}`}>
-      <label className="account-head">
-        <input
-          type="checkbox"
-          checked={policy.enabled}
-          disabled={r.busy || a.models.length === 0}
-          onChange={(e) => r.setPolicy(a.name, { ...policy, enabled: e.target.checked })}
-        />
-        <span className="provider-label">{a.label}</span>
-        <span className={`billing billing-${a.billing}`}>{BILLING[a.billing]}</span>
-      </label>
-      {a.error !== undefined ? (
-        <span className="inline-error">⚠ {a.error.title}</span>
-      ) : (
-        <>
-          <span className="muted small">
-            {a.models.map((m) => `${m.model}${m.health ? ` (${m.health})` : ""}`).join(" · ")}
-          </span>
-          {policy.enabled ? (
-            <div className="account-policy">
-              <span className="muted small">niveaux :</span>
-              {TIERS.map((t) => (
-                <button
-                  key={t}
-                  className={`level-chip ${levels.includes(t) ? `tier tier-${t}` : "off"}`}
-                  disabled={r.busy}
-                  onClick={() => toggleLevel(t)}
-                >
-                  {t}
-                </button>
-              ))}
-              {a.billing === "subscription" ? (
-                <label className="muted small max-calls">
-                  max/run
-                  <input
-                    type="number"
-                    min={0}
-                    max={50}
-                    value={policy.maxCallsPerRun ?? ""}
-                    placeholder="∞"
-                    disabled={r.busy}
-                    onChange={(e) => {
-                      const n = Number.parseInt(e.target.value, 10);
-                      const { maxCallsPerRun: _drop, ...rest } = policy;
-                      r.setPolicy(a.name, Number.isFinite(n) ? { ...rest, maxCallsPerRun: n } : rest);
-                    }}
-                  />
-                </label>
-              ) : null}
-            </div>
-          ) : null}
-        </>
-      )}
-    </li>
-  );
-}
-
 function ManualRouting({ r }: { r: Relay }): React.JSX.Element {
   const { catalog } = r;
+  const ready = r.state?.providers.filter((p) => p.ready) ?? [];
   return (
     <>
+      <div className="field">
+        <span className="field-label">Compte</span>
+        <select value={r.provider} disabled={r.busy} onChange={(e) => r.chooseProvider(e.target.value)}>
+          {ready.map((p) => (
+            <option key={p.name} value={p.name}>
+              {p.label} — {BILLING[p.billing]}
+            </option>
+          ))}
+          {ready.length === 0 ? <option value="">aucun compte prêt</option> : null}
+        </select>
+      </div>
       <div className="composer-head">
-        <strong>{r.selected?.label ?? "Aucun compte"}</strong>
+        <span className="field-label">Modèles par niveau</span>
         {r.isRecommended ? <span className="badge ok">recommandé</span> : null}
         {!r.isRecommended && catalog.suggested !== null && !r.busy ? (
           <button className="link" onClick={r.resetTiers}>
             revenir aux recommandés
           </button>
         ) : null}
+        <span className="muted small">
+          {catalog.loading ? "détection…" : catalog.models.length > 0 ? `${catalog.models.length} détectés` : ""}
+        </span>
       </div>
-      <span className="muted small">
-        {catalog.loading
-          ? "détection des modèles…"
-          : catalog.models.length > 0
-            ? `${catalog.models.length} modèles détectés avec ta clé`
-            : r.selected?.ready === false
-              ? "ajoute la clé de ce compte pour détecter ses modèles"
-              : ""}
-      </span>
       {r.tiers !== null ? (
         <TierPicker models={catalog.models} value={r.tiers} disabled={r.busy} onChange={r.changeTiers} />
       ) : (
-        <p className="muted small">Sélectionne un compte prêt (panneau Comptes) pour choisir ses modèles.</p>
+        <p className="muted small">
+          Aucun compte prêt.{" "}
+          <button className="link" onClick={() => r.openSettings("accounts")}>
+            Ajouter une clé
+          </button>
+        </p>
       )}
       {catalog.error !== undefined && r.selected?.ready === true ? (
         <p className="inline-error">
@@ -287,6 +221,43 @@ export function MetricsPanel(): React.JSX.Element {
   return (
     <div className="panel">
       <MetricsBar m={r.metrics} />
+    </div>
+  );
+}
+
+/** Livrable final assemblé par l'étape de synthèse. */
+export function ResultPanel(): React.JSX.Element {
+  const r = useRelay();
+  const [copied, setCopied] = useState(false);
+  const s = r.synthesis;
+  if (s === null) {
+    return (
+      <div className="panel">
+        <p className="muted dag-empty">
+          {!r.settings.synthesis
+            ? "Synthèse désactivée (Réglages › Routage)."
+            : r.busy
+              ? "Le livrable final apparaîtra ici à la fin du run."
+              : "Lance un pipeline : le livrable final (code des fichiers, mode d'emploi) s'affichera ici."}
+        </p>
+      </div>
+    );
+  }
+  const copy = (): void => {
+    void navigator.clipboard.writeText(s.text).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <div className="panel result">
+      <div className="result-head">
+        <span className="muted small">
+          assemblé par {s.provider} · {s.model} · {money(s.metrics.billedCost)} payé · {money(s.metrics.referenceCost)} équiv.
+        </span>
+        <button onClick={copy}>{copied ? "Copié ✓" : "Copier"}</button>
+      </div>
+      <pre className="output result-text">{s.text}</pre>
     </div>
   );
 }
@@ -447,11 +418,10 @@ function Stepper(props: { phase: Phase; done: number; total: number; elapsed: nu
 
 function whyDisabled(r: Relay): string {
   if (r.mode === "auto") {
-    if (r.usableAccounts.length === 0) return "aucun compte utilisable : ajoute une clé ou active un compte (panneau Modèles)";
+    if (r.usableAccounts.length === 0) return "aucun compte utilisable : ajoute une clé (⚙ Réglages) ou active un compte (panneau Modèles)";
   } else {
     const p = r.selected;
-    if (p === undefined) return "choisis un compte (panneau Comptes)";
-    if (!p.ready) return "ajoute la clé de ce compte (panneau Comptes)";
+    if (p === undefined || !p.ready) return "choisis un compte prêt (panneau Modèles) ou ajoute une clé (⚙ Réglages)";
     if (!r.tiersComplete) return "choisis un modèle pour chaque niveau (panneau Modèles)";
   }
   if (r.prompt.trim().length === 0) return "écris ta demande";

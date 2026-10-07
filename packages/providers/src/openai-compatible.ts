@@ -11,7 +11,7 @@
  *  - erreurs SDK traduites en `ProviderRequestError` (kind exploitable par le moteur/UI).
  */
 import OpenAI from "openai";
-import { defaultRegistry, kindFromStatus, ModelRegistry, ProviderRequestError } from "@relay/core";
+import { defaultRegistry, kindFromStatus, ModelRegistry, ProviderRequestError, shouldTryAnotherModel } from "@relay/core";
 import type {
   BillingMode,
   CompletionChunk,
@@ -152,7 +152,7 @@ export class OpenAICompatibleProvider implements Provider {
         }
         lastError = e;
         // Changer de modèle n'aide pas pour une clé refusée ou une requête invalide.
-        if (!e.retryable && e.kind !== "model_not_found") throw e;
+        if (!shouldTryAnotherModel(e)) throw e;
       }
     }
 

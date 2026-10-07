@@ -239,7 +239,8 @@ export type PipelineEvent =
       reason: string;
       alternatives: RouteAlternative[];
     }
-  | { type: "task:start"; taskId: string; model: string; provider?: string; effort?: Effort }
+  /** Une tentative commence (premier choix ou repli) ; `reason` est celle du modèle tenté. */
+  | { type: "task:start"; taskId: string; model: string; provider?: string; effort?: Effort; reason?: string }
   | { type: "log"; entry: LogEntry }
   | { type: "task:chunk"; taskId: string; text: string }
   | { type: "task:done"; taskId: string; result: TaskIO; metrics: TaskMetrics }

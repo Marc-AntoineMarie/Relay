@@ -5,9 +5,56 @@ import type {
   PoolResponse,
   ProviderReadiness,
   ServerEvent,
+  Settings,
   Strategy,
   TierModels,
+  KeyTestResult,
 } from "./types";
+
+export async function getSettings(): Promise<Settings | null> {
+  try {
+    return (await (await fetch("/api/settings")).json()) as Settings;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveSettings(patch: Partial<Settings>): Promise<Settings | null> {
+  try {
+    const res = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    return (await res.json()) as Settings;
+  } catch {
+    return null;
+  }
+}
+
+export async function testKey(provider: string, value?: string): Promise<KeyTestResult> {
+  try {
+    const res = await fetch("/api/keys/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(value ? { provider, value } : { provider }),
+    });
+    return (await res.json()) as KeyTestResult;
+  } catch {
+    return { ok: false, error: { kind: "network", title: "Moteur injoignable", detail: "test impossible" } };
+  }
+}
+
+export async function deleteKey(provider: string): Promise<ProviderReadiness[]> {
+  const res = await fetch("/api/keys/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider }),
+  });
+  const data = (await res.json()) as { providers?: ProviderReadiness[]; error?: string };
+  if (!res.ok) throw new Error(data.error ?? "suppression impossible");
+  return data.providers ?? [];
+}
 
 export type RunBody =
   | { mode: "auto"; prompt: string; strategy: Strategy; policies: Record<string, AccountPolicy> }

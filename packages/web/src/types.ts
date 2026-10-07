@@ -12,6 +12,30 @@ export interface ProviderReadiness {
   envKey?: string;
   keyUrl?: string;
   tierModels?: TierModels;
+  /** Fin de la clé enregistrée (« …KlvA ») — jamais la clé entière. */
+  keyHint?: string;
+}
+
+export interface Settings {
+  mode: Mode;
+  strategy: Strategy;
+  policies: Record<string, AccountPolicy>;
+  budgetPerRun: number | null;
+  synthesis: boolean;
+}
+
+export interface KeyTestResult {
+  ok: boolean;
+  detail?: string;
+  error?: ErrorDescription;
+  ms?: number;
+}
+
+export interface Synthesis {
+  text: string;
+  provider: string;
+  model: string;
+  metrics: TaskMetrics;
 }
 
 export interface AppState {
@@ -40,6 +64,8 @@ export interface AccountPolicy {
   enabled: boolean;
   levels?: Tier[];
   maxCallsPerRun?: number;
+  disabledModels?: string[];
+  extraModels?: string[];
 }
 
 export interface PoolModel {
@@ -47,6 +73,7 @@ export interface PoolModel {
   level: Tier;
   tags: Capability[];
   family: string;
+  known: boolean;
   inputPerM: number;
   outputPerM: number;
   health?: string;
@@ -57,6 +84,7 @@ export interface PoolAccount {
   label: string;
   billing: Billing;
   models: PoolModel[];
+  available: Array<PoolModel & { recommended: boolean; inPool: boolean }>;
   error?: ErrorDescription;
 }
 
@@ -110,6 +138,7 @@ export interface PipelineMetrics {
   totalDurationMs: number;
   taskCount: number;
   successCount: number;
+  overheadReferenceCost: number;
 }
 
 export type ServerEvent =
@@ -128,7 +157,7 @@ export type ServerEvent =
       reason: string;
       alternatives: RouteAlternative[];
     }
-  | { type: "task:start"; taskId: string; model: string; provider?: string; effort?: string }
+  | { type: "task:start"; taskId: string; model: string; provider?: string; effort?: string; reason?: string }
   | { type: "task:chunk"; taskId: string; text: string }
   | {
       type: "task:done";
@@ -137,6 +166,7 @@ export type ServerEvent =
       metrics: TaskMetrics;
     }
   | { type: "task:failed"; taskId: string; error: string; description?: ErrorDescription }
+  | { type: "pipeline:synthesis"; text: string; provider: string; model: string; metrics: TaskMetrics }
   | { type: "pipeline:done"; metrics: PipelineMetrics }
   | { type: "pipeline:failed"; error: string; description?: ErrorDescription }
   | { type: "error"; error: ErrorDescription }

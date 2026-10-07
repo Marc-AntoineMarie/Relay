@@ -42,6 +42,16 @@ async function collect(gen: AsyncGenerator<PipelineEvent>): Promise<PipelineEven
   return out;
 }
 
+describe("requête trop volumineuse", () => {
+  it("est reconnue (413, limite de tokens par minute) et justifie un autre modèle", async () => {
+    const { kindFromStatus, shouldTryAnotherModel } = await import("../src/errors.js");
+    expect(kindFromStatus(413)).toBe("too_large");
+    expect(kindFromStatus(400, "This model's maximum context length is 8192 tokens")).toBe("too_large");
+    expect(shouldTryAnotherModel(new ProviderRequestError("too_large", "x", "groq"))).toBe(true);
+    expect(shouldTryAnotherModel(new ProviderRequestError("auth", "x", "groq"))).toBe(false);
+  });
+});
+
 describe("AutoRouter — budget et modèles retirés", () => {
   const pool: PoolEntry[] = [
     { provider: "deepseek", model: "deepseek-chat", billing: "per-token" },

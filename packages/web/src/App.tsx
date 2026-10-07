@@ -1,82 +1,50 @@
 /**
- * Coquille du dashboard : barre du haut, erreurs globales et espace de travail en
- * panneaux libres (dockview) — chaque panneau se déplace (glisser son onglet à gauche,
- * à droite, en haut, en bas ou dans un autre groupe), se redimensionne indépendamment
- * et s'agrandit ; la disposition est mémorisée.
+ * Coquille du dashboard : barre du haut, erreurs globales, Réglages et espace de
+ * travail en panneaux libres (dockview) — chaque panneau se déplace (glisser son
+ * onglet), se redimensionne indépendamment et s'agrandit ; la disposition est mémorisée.
  */
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { DockviewReact, themeDark, type DockviewApi, type DockviewReadyEvent } from "dockview-react";
 import "dockview-react/dist/styles/dockview.css";
 import { ErrorCard } from "./components";
 import {
-  AccountsPanel,
   ComposerPanel,
   DetailPanel,
   JournalPanel,
   MetricsPanel,
   PipelinePanel,
+  ResultPanel,
   RoutingPanel,
 } from "./panels";
+import { SettingsView } from "./Settings";
 import { BILLING, load, RelayProvider, save, useRelay } from "./store";
 
 const PANELS = {
-  accounts: AccountsPanel,
   composer: ComposerPanel,
   routing: RoutingPanel,
   pipeline: PipelinePanel,
   detail: DetailPanel,
+  result: ResultPanel,
   metrics: MetricsPanel,
   journal: JournalPanel,
 };
 
 /** Incrémenter si la liste des panneaux change (invalide les dispositions mémorisées). */
-const LAYOUT_KEY = "relay.layout.v2";
+const LAYOUT_KEY = "relay.layout.v3";
 
 function defaultLayout(api: DockviewApi): void {
   api.clear();
-  api.addPanel({ id: "accounts", component: "accounts", title: "Comptes" });
-  api.addPanel({
-    id: "pipeline",
-    component: "pipeline",
-    title: "Pipeline",
-    position: { referencePanel: "accounts", direction: "right" },
-  });
-  api.addPanel({
-    id: "composer",
-    component: "composer",
-    title: "Demande",
-    position: { referencePanel: "pipeline", direction: "above" },
-  });
-  api.addPanel({
-    id: "routing",
-    component: "routing",
-    title: "Modèles",
-    position: { referencePanel: "pipeline", direction: "right" },
-  });
-  api.addPanel({
-    id: "detail",
-    component: "detail",
-    title: "Tâche",
-    position: { referencePanel: "routing", direction: "below" },
-  });
-  api.addPanel({
-    id: "journal",
-    component: "journal",
-    title: "Journal",
-    position: { referencePanel: "pipeline", direction: "below" },
-  });
-  api.addPanel({
-    id: "metrics",
-    component: "metrics",
-    title: "Coûts",
-    position: { referencePanel: "journal", direction: "within" },
-    inactive: true,
-  });
-  api.getPanel("accounts")?.group.api.setSize({ width: 270 });
-  api.getPanel("routing")?.group.api.setSize({ width: 400 });
-  api.getPanel("composer")?.group.api.setSize({ height: 160 });
+  api.addPanel({ id: "routing", component: "routing", title: "Modèles" });
+  api.addPanel({ id: "pipeline", component: "pipeline", title: "Pipeline", position: { referencePanel: "routing", direction: "right" } });
+  api.addPanel({ id: "composer", component: "composer", title: "Demande", position: { referencePanel: "pipeline", direction: "above" } });
+  api.addPanel({ id: "detail", component: "detail", title: "Tâche", position: { referencePanel: "pipeline", direction: "right" } });
+  api.addPanel({ id: "result", component: "result", title: "Résultat", position: { referencePanel: "detail", direction: "within" }, inactive: true });
+  api.addPanel({ id: "journal", component: "journal", title: "Journal", position: { referencePanel: "pipeline", direction: "below" } });
+  api.addPanel({ id: "metrics", component: "metrics", title: "Coûts", position: { referencePanel: "journal", direction: "within" }, inactive: true });
+  api.getPanel("routing")?.group.api.setSize({ width: 330 });
+  api.getPanel("detail")?.group.api.setSize({ width: 420 });
+  api.getPanel("composer")?.group.api.setSize({ height: 150 });
   api.getPanel("journal")?.group.api.setSize({ height: 240 });
-  api.getPanel("detail")?.group.api.setSize({ height: 300 });
 }
 
 export default function App(): React.JSX.Element {
@@ -114,6 +82,11 @@ function Shell(): React.JSX.Element {
     save(LAYOUT_KEY, api.toJSON());
   };
 
+  // Le livrable final arrive : on montre l'onglet Résultat.
+  useEffect(() => {
+    if (r.synthesis !== null) apiRef.current?.getPanel("result")?.api.setActive();
+  }, [r.synthesis]);
+
   return (
     <div className="app">
       <header className="topbar">
@@ -131,8 +104,8 @@ function Shell(): React.JSX.Element {
               Manuel · {r.selected.label} · {BILLING[r.selected.billing]}
             </span>
           ) : null}
-          <button className="ghost-btn" onClick={resetLayout} title="Remettre les panneaux à leur place">
-            ⟲ Disposition par défaut
+          <button className="ghost-btn" onClick={() => r.openSettings()} title="Comptes, clés, modèles, routage">
+            ⚙ Réglages
           </button>
         </div>
       </header>
@@ -145,7 +118,7 @@ function Shell(): React.JSX.Element {
             error={r.error}
             onDismiss={() => r.setError(null)}
             {...(r.canRun ? { onRetry: () => void r.run() } : {})}
-            {...(!r.isRecommended && r.catalog.suggested !== null ? { onReset: r.resetTiers } : {})}
+            {...(r.mode === "manual" && !r.isRecommended && r.catalog.suggested !== null ? { onReset: r.resetTiers } : {})}
           />
         </div>
       ) : null}
@@ -153,6 +126,8 @@ function Shell(): React.JSX.Element {
       <div className="dock">
         <DockviewReact components={PANELS} onReady={onReady} theme={themeDark} className="relay-dock" />
       </div>
+
+      <SettingsView onResetLayout={resetLayout} />
     </div>
   );
 }

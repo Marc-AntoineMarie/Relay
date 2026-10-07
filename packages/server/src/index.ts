@@ -31,6 +31,7 @@ import {
   profileModel,
   ProviderRequestError,
   Router,
+  shouldTryAnotherModel,
   STRATEGIES,
   type AccountPolicy,
   type BillingMode,
@@ -526,7 +527,7 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
       if (!(err instanceof ProviderRequestError)) throw err;
       health.reportFailure(c.provider, c.model, err.kind);
       const next = planners[i + 1];
-      if (next === undefined || !(err.retryable || err.kind === "model_not_found")) throw err;
+      if (next === undefined || !shouldTryAnotherModel(err)) throw err;
       const d = describeError(err);
       sseLog(res, {
         level: "warn",

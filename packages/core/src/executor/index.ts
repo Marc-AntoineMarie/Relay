@@ -9,7 +9,7 @@
  * À VENIR (phase D) : remplacer `runTask` par une boucle d'outils (fichiers + shell).
  */
 import { referenceCost } from "../catalog.js";
-import { describeError, ProviderRequestError } from "../errors.js";
+import { describeError, ProviderRequestError, shouldTryAnotherModel } from "../errors.js";
 import { computePipelineMetrics } from "../metrics/index.js";
 import { buildWorkerPrompt } from "../decomposer/system-prompt.js";
 import { manualRouting, type RouteCandidate, type TaskRouting } from "../router/auto.js";
@@ -77,7 +77,8 @@ export interface ExecutorOptions {
 const SYNTHESIS_SYSTEM =
   "Tu es le rédacteur final du pipeline Relay. Tu assembles les résultats des tâches en un livrable unique, cohérent et directement utilisable.";
 /** Part de chaque résultat transmise à la synthèse (caractères) : borne l'entrée. */
-const SYNTHESIS_INPUT_PER_TASK = 6_000;
+const SYNTHESIS_INPUT_PER_TASK = 4_000;
+const SYNTHESIS_MAX_TOKENS = 12_000;
 const SYNTHESIS_TASK: Task = {
   id: "synthese",
   type: "document",
@@ -157,7 +158,14 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
       task.assignedModel = c.model;
       if (c.effort !== undefined) task.assignedEffort = c.effort;
 
-      yield { type: "task:start", taskId: task.id, model: c.model, provider: c.provider, ...(c.effort !== undefined ? { effort: c.effort } : {}) };
+      yield {
+        type: "task:start",
+        taskId: task.id,
+        model: c.model,
+        provider: c.provider,
+        reason: c.reason,
+        ...(c.effort !== undefined ? { effort: c.effort } : {}),
+      };
       yield log({
         level: "info",
         category: "request",
@@ -184,7 +192,7 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
         routing.report?.(c, pe);
         const description = describeError(err);
         const next = candidates[i + 1];
-        if (next !== undefined && pe !== undefined && (pe.retryable || pe.kind === "model_not_found")) {
+        if (next !== undefined && pe !== undefined && shouldTryAnotherModel(pe)) {
           yield log({
             level: "warn",
             category: "fallback",
@@ -270,7 +278,8 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
  * En cas d'échec, le pipeline reste réussi (les résultats des tâches sont là).
  */
 async function* synthesize(pipeline: Pipeline, routing: TaskRouting): AsyncGenerator<PipelineEvent, TaskMetrics | undefined> {
-  const candidates = routing.candidates({ tier: "build" }).slice(0, 2);
+  // La synthèse lit tous les résultats : besoin « long contexte » (évite les modèles à petite fenêtre).
+  const candidates = routing.candidates({ tier: "build", needs: ["long_context"] }).slice(0, MAX_ROUTE_ATTEMPTS);
   const prompt = buildSynthesisPrompt(pipeline);
 
   for (const [i, c] of candidates.entries()) {
@@ -287,7 +296,7 @@ async function* synthesize(pipeline: Pipeline, routing: TaskRouting): AsyncGener
           ...(c.effort !== undefined ? { effort: c.effort } : {}),
           system: SYNTHESIS_SYSTEM,
           messages: [{ role: "user", content: prompt }],
-          maxTokens: DEFAULT_WORKER_MAX_TOKENS,
+          maxTokens: SYNTHESIS_MAX_TOKENS,
         },
         provider,
         onChunk: () => undefined,

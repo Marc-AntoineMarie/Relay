@@ -11,6 +11,7 @@ export type ErrorKind =
   | "overloaded" // service saturé (5xx)
   | "timeout" // pas de réponse dans le délai
   | "bad_request" // paramètre refusé par le fournisseur
+  | "too_large" // requête trop volumineuse pour ce modèle / cette offre (contexte, tokens par minute)
   | "network" // connexion impossible
   | "unknown";
 
@@ -32,9 +33,17 @@ export class ProviderRequestError extends Error {
   }
 }
 
+/** Un autre modèle peut-il réussir là où celui-ci a échoué ? (repli du routeur) */
+export function shouldTryAnotherModel(error: ProviderRequestError): boolean {
+  return error.retryable || error.kind === "model_not_found" || error.kind === "too_large";
+}
+
+const TOO_LARGE = /(request too large|too many tokens|context length|maximum context|context window|reduce (your|the) (message|prompt))/i;
+
 /** Classe une erreur HTTP (le message affine certains cas ambigus). */
 export function kindFromStatus(status: number | undefined, message = ""): ErrorKind {
   if (status === undefined) return "unknown";
+  if (status === 413 || ((status === 400 || status === 429) && TOO_LARGE.test(message))) return "too_large";
   if (status === 401 || status === 403) return "auth";
   if (status === 404) return "model_not_found";
   if (status === 408) return "timeout";
@@ -71,6 +80,10 @@ const COPY: Record<ErrorKind, { title: string; hint: string }> = {
   bad_request: {
     title: "Requête refusée par le fournisseur",
     hint: "Un paramètre n'est pas supporté par ce modèle : essaie un autre modèle.",
+  },
+  too_large: {
+    title: "Requête trop volumineuse pour ce modèle",
+    hint: "Le modèle (ou ton offre gratuite) limite la taille des requêtes : un modèle à plus grand contexte, comme Gemini, convient mieux.",
   },
   network: { title: "Connexion impossible", hint: "Vérifie ta connexion (ou qu'Ollama tourne, pour le local)." },
   unknown: { title: "Erreur inattendue", hint: "Réessaie ; si ça persiste, change de modèle ou de backend." },

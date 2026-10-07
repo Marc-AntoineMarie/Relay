@@ -234,3 +234,49 @@ button.link { background: none; border: none; color: var(--accent); padding: 0; 
 .log-warn .log-title { color: var(--amber); }
 .log-error .log-title { color: var(--red); }
 .log-detail { margin: 2px 10px 8px 34px; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; color: var(--muted); }
+
+/* ── phase C : réglages, résultat ─────────────── */
+code { font: 12px var(--mono); background: var(--raise); padding: 1px 5px; border-radius: 4px; }
+.mono { font-family: var(--mono); }
+button.danger { border-color: rgba(255, 92, 114, 0.5); color: var(--red); }
+.field-label .link { margin-left: 8px; text-transform: none; letter-spacing: 0; }
+.accounts.compact .account { padding: 6px 8px; }
+
+.settings-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(5, 8, 12, 0.72); display: grid; place-items: center; padding: 24px; }
+.settings { width: min(1100px, 100%); height: min(780px, 100%); display: grid; grid-template-columns: 240px 1fr; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 14px; overflow: hidden; box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5); }
+.settings-nav { background: var(--panel-2); border-right: 1px solid var(--border); padding: 18px 12px; display: flex; flex-direction: column; gap: 4px; }
+.settings-nav h2 { font-size: 15px; margin: 0 8px 12px; }
+.settings-nav button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; background: none; border: 1px solid transparent; padding: 8px 10px; }
+.settings-nav button.on { background: var(--raise); border-color: var(--border-strong); }
+.settings-note { margin: auto 8px 0; }
+.settings-body { position: relative; overflow: auto; padding: 22px 28px; }
+.settings-body h3 { margin: 0 0 6px; font-size: 17px; }
+.settings-body h4 { margin: 22px 0 8px; font-size: 13px; }
+.settings-close { position: absolute; top: 12px; right: 16px; }
+
+.account-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-top: 14px; }
+.account-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; background: var(--panel-2); }
+.account-card-head { display: flex; align-items: center; gap: 8px; }
+.account-status { margin-left: auto; font-family: var(--mono); }
+.account-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.test-ok { color: var(--green); margin: 0; }
+.test-ko { color: var(--red); margin: 0; }
+
+.models-search { width: 260px; margin: 10px 0 4px; }
+.model-table { margin-top: 14px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.model-table-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: var(--panel-2); border-bottom: 1px solid var(--border); }
+.model-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.model-table th { text-align: left; font-weight: 600; color: var(--muted); padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.model-table td { padding: 5px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.model-table tr:last-child td { border-bottom: none; }
+.model-table .row-off td { opacity: 0.55; }
+
+.setting-row { display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.setting-row p { margin: 3px 0 0; }
+.budget { display: inline-flex; align-items: center; gap: 6px; }
+.budget input { width: 110px; }
+.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+
+.result { gap: 8px; }
+.result-head { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.result-text { flex: 1; min-height: 0; }

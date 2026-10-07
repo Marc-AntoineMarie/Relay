@@ -1,21 +1,39 @@
 /**
  * État partagé de l'application, exposé aux panneaux via un contexte React
  * (les panneaux sont rendus par dockview, chacun dans son propre conteneur).
+ *
+ * Les réglages (mode, stratégie, plafonds, budget, synthèse) vivent côté moteur
+ * (`.relay/settings.json`) ; le navigateur ne garde que des conforts (disposition,
+ * dernier compte manuel, modèles manuels).
  */
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { getModels, getPool, getState, runPipeline, setKey, type RunBody } from "./api";
+import {
+  deleteKey,
+  getModels,
+  getPool,
+  getSettings,
+  getState,
+  runPipeline,
+  saveSettings,
+  setKey,
+  testKey,
+  type RunBody,
+} from "./api";
 import {
   TIERS,
   type AccountPolicy,
   type AppState,
   type ErrorDescription,
+  type KeyTestResult,
   type LogEntry,
   type Mode,
   type Phase,
   type PipelineMetrics,
   type PoolResponse,
   type ProviderReadiness,
+  type Settings,
   type Strategy,
+  type Synthesis,
   type TaskView,
   type TierModels,
 } from "./types";
@@ -23,7 +41,7 @@ import {
 /** Taille max du journal gardé en mémoire (les runs très longs restent fluides). */
 const MAX_LOGS = 3000;
 
-// Préférences locales (backend, modèles, disposition) — confort uniquement.
+// Conforts locaux (disposition, compte et modèles du mode manuel).
 export const load = <T,>(key: string): T | null => {
   try {
     const raw = localStorage.getItem(key);
@@ -46,7 +64,7 @@ export const BILLING: Record<ProviderReadiness["billing"], string> = {
   "per-token": "à l'usage",
 };
 
-/** Backend par défaut : le dernier utilisé, sinon un backend gratuit prêt. */
+/** Compte du mode manuel : le dernier utilisé, sinon un compte gratuit prêt. */
 function pickProvider(providers: ProviderReadiness[], fallback: string): string {
   const last = load<string>("relay.provider");
   if (last !== null && providers.some((p) => p.name === last)) return last;
@@ -61,9 +79,14 @@ interface Catalog {
   error?: ErrorDescription;
 }
 
+export type SettingsSection = "accounts" | "models" | "routing" | "general";
+
+const DEFAULT_SETTINGS: Settings = { mode: "auto", strategy: "balanced", policies: {}, budgetPerRun: null, synthesis: true };
+
 function useRelayState() {
   const [state, setState] = useState<AppState | null>(null);
   const [serverDown, setServerDown] = useState(false);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [provider, setProvider] = useState("");
   const [catalog, setCatalog] = useState<Catalog>({ loading: false, models: [], suggested: null });
   const [tiers, setTiers] = useState<TierModels | null>(null);
@@ -72,34 +95,35 @@ function useRelayState() {
   const [views, setViews] = useState<TaskView[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<PipelineMetrics | null>(null);
+  const [synthesis, setSynthesis] = useState<Synthesis | null>(null);
   const [error, setError] = useState<ErrorDescription | null>(null);
   const [keyDraft, setKeyDraft] = useState<Record<string, string>>({});
+  const [keyTests, setKeyTests] = useState<Record<string, KeyTestResult | "pending">>({});
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
-  const abortRef = useRef<AbortController | null>(null);
-  const [mode, setModeState] = useState<Mode>(() => load<Mode>("relay.mode") ?? "auto");
-  const [strategy, setStrategyState] = useState<Strategy>(() => load<Strategy>("relay.strategy") ?? "balanced");
-  const [savedPolicies, setSavedPolicies] = useState<Record<string, AccountPolicy>>(
-    () => load<Record<string, AccountPolicy>>("relay.policies") ?? {},
-  );
   const [pool, setPool] = useState<PoolResponse | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [runInfo, setRunInfo] = useState<{ mode: Mode; accounts: string[]; strategy?: Strategy } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const busy = phase === "planning" || phase === "running";
   const selected = useMemo(() => state?.providers.find((p) => p.name === provider), [state, provider]);
+  const cfg = settings ?? DEFAULT_SETTINGS;
 
-  // Chargement de l'état (avec reconnexion automatique).
+  // État du moteur (avec reconnexion automatique), puis réglages.
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
     const loadState = (): void => {
       getState()
-        .then((s) => {
+        .then(async (s) => {
           if (cancelled) return;
           setState(s);
           setServerDown(false);
           setProvider((p) => p || pickProvider(s.providers, s.defaultProvider));
+          const loaded = await getSettings();
+          if (!cancelled && loaded !== null) setSettings(loaded);
         })
         .catch(() => {
           if (cancelled) return;
@@ -114,7 +138,7 @@ function useRelayState() {
     };
   }, []);
 
-  // Détection des modèles du backend choisi + modèles par tier (mémorisés ou recommandés).
+  // Mode manuel : modèles du compte choisi + modèles par niveau (mémorisés ou recommandés).
   useEffect(() => {
     if (!provider || selected?.ready !== true) {
       setCatalog({ loading: false, models: [], suggested: selected?.tierModels ?? null });
@@ -136,7 +160,8 @@ function useRelayState() {
     };
   }, [provider, selected?.ready, selected?.tierModels]);
 
-  // Pool du mode auto : rechargé quand l'état des comptes change (clé ajoutée…).
+  // Pool du mode auto : rechargé quand les comptes ou leurs réglages changent.
+  const policiesKey = JSON.stringify(settings?.policies ?? {});
   useEffect(() => {
     if (state === null) return;
     let cancelled = false;
@@ -146,7 +171,7 @@ function useRelayState() {
     return () => {
       cancelled = true;
     };
-  }, [state]);
+  }, [state, policiesKey]);
 
   // Chrono pendant l'exécution : montre que ça tourne.
   useEffect(() => {
@@ -155,6 +180,33 @@ function useRelayState() {
     return () => clearInterval(id);
   }, [busy]);
 
+  // ── Réglages ──────────────────────────────────────────────────────────────
+  function updateSettings(patch: Partial<Settings>): void {
+    setSettings((s) => ({ ...(s ?? DEFAULT_SETTINGS), ...patch }));
+    void saveSettings(patch).then((saved) => {
+      if (saved !== null) setSettings(saved);
+    });
+  }
+
+  const policyOf = (name: string): AccountPolicy => cfg.policies[name] ?? { enabled: true };
+  const setPolicy = (name: string, next: AccountPolicy): void =>
+    updateSettings({ policies: { ...cfg.policies, [name]: next } });
+
+  /** Ajoute / retire un modèle du pool auto d'un compte. */
+  function setModelInPool(account: string, model: string, recommended: boolean, inPool: boolean): void {
+    const p = policyOf(account);
+    const without = (xs: string[] | undefined): string[] => (xs ?? []).filter((m) => m !== model);
+    setPolicy(
+      account,
+      recommended
+        ? { ...p, disabledModels: inPool ? without(p.disabledModels) : [...without(p.disabledModels), model] }
+        : { ...p, extraModels: inPool ? [...without(p.extraModels), model] : without(p.extraModels) },
+    );
+  }
+
+  const usableAccounts = pool?.accounts.filter((a) => a.models.length > 0 && policyOf(a.name).enabled) ?? [];
+
+  // ── Comptes et clés ───────────────────────────────────────────────────────
   function chooseProvider(name: string): void {
     if (busy) return;
     setProvider(name);
@@ -178,47 +230,45 @@ function useRelayState() {
       const providers = await setKey(name, value);
       setState((s) => (s ? { ...s, providers } : s));
       setKeyDraft((d) => ({ ...d, [name]: "" }));
-      chooseProvider(name);
+      setKeyTests((t) => ({ ...t, [name]: "pending" }));
+      const result = await testKey(name);
+      setKeyTests((t) => ({ ...t, [name]: result }));
     } catch (e: unknown) {
       setError({ kind: "config", title: "Clé non enregistrée", detail: e instanceof Error ? e.message : String(e) });
     }
   }
 
+  async function checkKey(name: string): Promise<void> {
+    const draft = (keyDraft[name] ?? "").trim();
+    setKeyTests((t) => ({ ...t, [name]: "pending" }));
+    const result = await testKey(name, draft || undefined);
+    setKeyTests((t) => ({ ...t, [name]: result }));
+  }
+
+  async function removeKey(name: string): Promise<void> {
+    try {
+      const providers = await deleteKey(name);
+      setState((s) => (s ? { ...s, providers } : s));
+      setKeyTests((t) => {
+        const { [name]: _drop, ...rest } = t;
+        return rest;
+      });
+    } catch (e: unknown) {
+      setError({ kind: "config", title: "Suppression impossible", detail: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  // ── Exécution ─────────────────────────────────────────────────────────────
   const patch = (id: string, update: (v: TaskView) => Partial<TaskView>): void =>
     setViews((vs) => vs.map((v) => (v.task.id === id ? { ...v, ...update(v) } : v)));
-
-  // Plafonds effectifs : défauts du moteur, surchargés par les choix de l'utilisateur.
-  const policies: Record<string, AccountPolicy> = { ...pool?.defaultPolicies, ...savedPolicies };
-  const policyOf = (name: string): AccountPolicy => policies[name] ?? { enabled: true };
-  const usableAccounts =
-    pool?.accounts.filter((a) => a.models.length > 0 && policyOf(a.name).enabled) ?? [];
-
-  function setMode(next: Mode): void {
-    if (busy) return;
-    setModeState(next);
-    save("relay.mode", next);
-  }
-
-  function setStrategy(next: Strategy): void {
-    setStrategyState(next);
-    save("relay.strategy", next);
-  }
-
-  function setPolicy(name: string, next: AccountPolicy): void {
-    setSavedPolicies((p) => {
-      const updated = { ...p, [name]: next };
-      save("relay.policies", updated);
-      return updated;
-    });
-  }
 
   const pushLog = (entry: LogEntry): void =>
     setLogs((ls) => (ls.length >= MAX_LOGS ? [...ls.slice(-MAX_LOGS + 1), entry] : [...ls, entry]));
 
   async function run(): Promise<void> {
     let body: RunBody;
-    if (mode === "auto") {
-      body = { mode: "auto", prompt, strategy, policies };
+    if (cfg.mode === "auto") {
+      body = { mode: "auto", prompt, strategy: cfg.strategy, policies: cfg.policies };
     } else {
       if (tiers === null) return;
       body = { mode: "manual", prompt, provider, models: tiers };
@@ -228,6 +278,7 @@ function useRelayState() {
     setPhase("planning");
     setError(null);
     setMetrics(null);
+    setSynthesis(null);
     setViews([]);
     setLogs([]);
     setRunInfo(null);
@@ -248,15 +299,15 @@ function useRelayState() {
             setViews(ev.tasks.map((task) => ({ task, status: "pending", output: "" })));
             break;
           case "task:route":
-            patch(ev.taskId, () => ({
-              provider: ev.provider,
-              model: ev.model,
-              reason: ev.reason,
-              alternatives: ev.alternatives,
-            }));
+            patch(ev.taskId, () => ({ provider: ev.provider, model: ev.model, reason: ev.reason, alternatives: ev.alternatives }));
             break;
           case "task:start":
-            patch(ev.taskId, () => ({ status: "running", model: ev.model, ...(ev.provider ? { provider: ev.provider } : {}) }));
+            patch(ev.taskId, () => ({
+              status: "running",
+              model: ev.model,
+              ...(ev.provider ? { provider: ev.provider } : {}),
+              ...(ev.reason ? { reason: ev.reason } : {}),
+            }));
             setSelectedId(ev.taskId);
             break;
           case "task:chunk":
@@ -277,6 +328,9 @@ function useRelayState() {
           case "task:failed":
             patch(ev.taskId, () => ({ status: "failed", error: ev.error }));
             setSelectedId(ev.taskId);
+            break;
+          case "pipeline:synthesis":
+            setSynthesis({ text: ev.text, provider: ev.provider, model: ev.model, metrics: ev.metrics });
             break;
           case "pipeline:done":
             setMetrics(ev.metrics);
@@ -318,10 +372,23 @@ function useRelayState() {
   return {
     state,
     serverDown,
+    settings: cfg,
+    settingsLoaded: settings !== null,
+    updateSettings,
+    mode: cfg.mode,
+    setMode: (mode: Mode) => !busy && updateSettings({ mode }),
+    strategy: cfg.strategy,
+    setStrategy: (strategy: Strategy) => updateSettings({ strategy }),
+    policyOf,
+    setPolicy,
+    setModelInPool,
+    pool,
+    usableAccounts,
     provider,
     selected,
     catalog,
     tiers,
+    tiersComplete,
     prompt,
     setPrompt,
     phase,
@@ -331,33 +398,31 @@ function useRelayState() {
     setSelectedId,
     selectedView: views.find((v) => v.task.id === selectedId) ?? views.find((v) => v.status === "running"),
     metrics,
+    synthesis,
     error,
     setError,
     keyDraft,
     setKeyDraft,
+    keyTests,
     elapsed: startedAt !== null ? Math.max(0, Math.round((now - startedAt) / 1000)) : 0,
     doneCount: views.filter((v) => v.status === "done").length,
-    tiersComplete,
     canRun:
       !busy &&
       prompt.trim().length > 0 &&
-      (mode === "auto" ? usableAccounts.length > 0 : selected?.ready === true && tiersComplete),
-    mode,
-    setMode,
-    strategy,
-    setStrategy,
-    pool,
-    policyOf,
-    setPolicy,
-    usableAccounts,
-    logs,
-    runInfo,
+      (cfg.mode === "auto" ? usableAccounts.length > 0 : selected?.ready === true && tiersComplete),
     isRecommended:
       tiers !== null && catalog.suggested !== null && TIERS.every((t) => tiers[t] === catalog.suggested?.[t]),
+    logs,
+    runInfo,
+    settingsOpen,
+    openSettings: (section: SettingsSection = "accounts") => setSettingsOpen(section),
+    closeSettings: () => setSettingsOpen(null),
     chooseProvider,
     changeTiers,
     resetTiers,
     saveKey,
+    checkKey,
+    removeKey,
     run,
     stop: () => abortRef.current?.abort(),
   };
