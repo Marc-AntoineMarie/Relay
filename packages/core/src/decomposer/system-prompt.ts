@@ -14,7 +14,7 @@ dépendances.
 
 ## Règles
 
-1. Décompose en 3 à 8 tâches. Moins de 3 = pas assez granulaire pour router.
+1. Décompose en 3 à 8 tâches (sauf suite d'un travail existant, règle 12). Moins de 3 = pas assez granulaire pour router.
    Plus de 8 = la surcharge de coordination mange les économies. Si la demande ne peut
    vraiment pas tenir en 8 tâches, découpe au mieux et explique-le dans "analysis".
 
@@ -64,9 +64,15 @@ dépendances.
 
 10. Si l'utilisateur veut lancer, voir, essayer ou utiliser ce qui est créé, prévois un
     point d'entrée exécutable (programme principal en ligne de commande, ou interface
-    graphique si elle est demandée) et donne dans "contracts" la commande pour le lancer.
+    graphique si elle est demandée et possible avec les outils présents) et donne dans
+    "contracts" la commande pour le lancer. La tâche "verify" vérifie aussi que ce point
+    d'entrée démarre (au minimum son import), pas seulement les tests.
 
 11. Rédige "analysis", les descriptions, "spec" et "contracts" dans la langue de la demande.
+
+12. Si le contexte projet décrit du travail déjà fait dans ce dossier (session Relay), la
+    demande est une suite ou une correction : planifie seulement ce qui change (1 à 3 tâches
+    suffisent souvent), garde les fichiers et contrats existants, ne recrée pas le projet.
 
 Les IDs de tâches sont des chaînes ("1", "2", ...). "dependsOn" ne référence que des IDs
 existants dans le plan. Renvoie une réponse conforme au schéma fourni.`;

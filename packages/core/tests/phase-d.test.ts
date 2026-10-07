@@ -8,7 +8,7 @@ import { defaultRegistry } from "../src/registry.js";
 import type { RouteCandidate, TaskRouting } from "../src/router/auto.js";
 import type { CompletionRequest, Pipeline, PipelineEvent, Provider, Task } from "../src/types.js";
 import { kindFromStatus, ProviderRequestError, retryDelayMs } from "../src/errors.js";
-import { checkCommand, runCommand } from "../src/workspace/commands.js";
+import { checkCommand, launchCommand, runCommand } from "../src/workspace/commands.js";
 import { condense, parseActions } from "../src/workspace/protocol.js";
 import { Workspace, WorkspaceError } from "../src/workspace/workspace.js";
 
@@ -85,6 +85,10 @@ describe("protocole d'action", () => {
     ]);
     expect(forgot.incomplete).toEqual(["c.py"]);
     expect(condense("avant\n===FILE: c.py===\nz =")).toBe("avant\n[fichier incomplet, non écrit : c.py]");
+    // Cas réel (gpt-oss) : RUN sans « === » final, END orphelin.
+    const sloppy = "===RUN: python3 -c \"import calculator; print('ok')\"\n===END===\n===RUN: python3 -m unittest -v===\nFini.";
+    expect(parseActions(sloppy).runs).toEqual(["python3 -c \"import calculator; print('ok')\"", "python3 -m unittest -v"]);
+    expect(condense(sloppy)).toBe("Fini.");
   });
 });
 
@@ -118,6 +122,23 @@ describe("politique des commandes", () => {
     expect(slow.timedOut).toBe(true);
     expect(slow.exitCode).toBeNull();
     expect((await runCommand("cat", { cwd: dir, stdin: "2+2\n" })).output).toBe("2+2\n");
+  });
+
+  it("lancement d'app : un plantage au démarrage est remonté, sinon le programme continue", async () => {
+    const crash = await launchCommand("echo 'ModuleNotFoundError: tkinter' >&2; exit 1", dir, { watchMs: 1_500 });
+    expect([crash.exited, crash.exitCode]).toEqual([true, 1]);
+    expect(crash.output).toContain("ModuleNotFoundError");
+    let lateExit: number | null | undefined;
+    const app = await launchCommand("echo fenêtre ouverte; sleep 0.6; echo 'Traceback: erreur au clic' >&2; exit 2", dir, {
+      watchMs: 300,
+      onExit: (code) => (lateExit = code),
+    });
+    expect(app.exited).toBe(false);
+    expect(app.output).toContain("fenêtre ouverte");
+    // Plantage après la surveillance : remonté par onExit, sortie complète dans le journal.
+    await new Promise((r) => setTimeout(r, 1_000));
+    expect(lateExit).toBe(2);
+    expect(readFileSync(app.logPath, "utf8")).toContain("Traceback");
   });
 });
 

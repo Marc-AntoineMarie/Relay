@@ -18,8 +18,11 @@ export interface AgentActions {
 
 const FILE_HEAD = /^\s*===FILE:\s*(.+?)\s*===\s*$/;
 const FILE_END = /^\s*===END===\s*$/;
-const RUN = /^\s*===RUN:\s*(.+?)\s*===\s*$/;
-const READ = /^\s*===READ:\s*(.+?)\s*===\s*$/;
+// Le « === » final est parfois oublié par les modèles : une ligne qui commence par ===RUN: suffit.
+const RUN = /^\s*===RUN:\s*(.+?)\s*(?:===)?\s*$/;
+const READ = /^\s*===READ:\s*(.+?)\s*(?:===)?\s*$/;
+/** Lignes de protocole sans contenu utile pour un lecteur (commandes listées à part, END orphelin). */
+const NOISE = /^\s*===(RUN|READ):.*$|^\s*===END===\s*$/;
 
 export const ACTION_PROTOCOL = `## Protocole d'action (pour agir réellement sur le dossier de travail)
 Tu n'as pas d'outils ni d'appels de fonction : tu agis uniquement en écrivant ces balises dans ta réponse.
@@ -38,6 +41,9 @@ Règles :
 - Chemins relatifs au dossier de travail. Écris toujours le fichier entier, jamais un extrait.
 - Pas de commande interactive ni de programme qui ne s'arrête pas seul ; pas d'installation
   de paquets : n'utilise que ce qui est installé (bibliothèque standard, ex. unittest en Python).
+- Si tu écris ou modifies le programme principal, vérifie qu'il démarre ici : au minimum
+  son import (ex. ===RUN: python3 -c "import calculatrice"===). Une fenêtre graphique ne
+  peut pas être ouverte ici : vérifie la logique, pas l'affichage.
 - Après tes commandes, tu recevras leur sortie et pourras corriger. Si un test échoue, corrige
   le code plutôt que le test, sauf si le test est manifestement faux.
 - Termine par une phrase de résumé de ce que tu as fait.`;
@@ -105,6 +111,7 @@ export function condense(text: string): string {
   }
   out.push(...lines.slice(i));
   return out
+    .filter((l) => !NOISE.test(l))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();

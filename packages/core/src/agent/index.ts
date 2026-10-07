@@ -15,7 +15,7 @@ import { ACTION_PROTOCOL, condense, parseActions } from "../workspace/protocol.j
 import type { Workspace } from "../workspace/workspace.js";
 
 export const AGENT_SYSTEM =
-  "Tu es un agent de développement dans le pipeline Relay. Tu travailles dans un vrai dossier : tu crées et modifies des fichiers et lances des commandes grâce au protocole d'action. Fais exactement ta tâche, vérifie ton travail quand c'est pertinent, et reste concis hors des fichiers.";
+  "Tu es un agent de développement dans le pipeline Relay. Tu travailles dans un vrai dossier : tu crées et modifies des fichiers et lances des commandes grâce au protocole d'action. Fais exactement ta tâche, vérifie ton travail quand c'est pertinent, et reste concis hors des fichiers. Écris tes phrases (hors code) dans la langue de la demande originale.";
 
 export interface AgentOptions {
   workspace: Workspace;
@@ -142,7 +142,8 @@ export function agenticRunTask(opts: AgentOptions): RunTask {
       let nudge: string | undefined;
       if (iter === 0 && actions.files.length === 0 && actions.runs.length === 0 && actions.reads.length === 0) {
         if (EXPECTS_FILES.has(task.type)) {
-          nudge = "Tu n'as écrit aucun fichier, alors que ta tâche demande de les créer ou de les modifier réellement. Écris-les maintenant avec ===FILE=== (contenu complet).";
+          nudge =
+            "Tu n'as écrit aucun fichier. Si ta tâche demande de créer ou de modifier des fichiers et que ce n'est pas déjà fait, écris-les maintenant avec ===FILE=== (contenu complet). Si le dossier contient déjà ce qu'il faut, ne réécris rien : dis-le en une phrase.";
         } else if (task.type === "verify") {
           nudge = "Tu n'as lancé aucune vérification : lance-la réellement avec ===RUN===.";
         }

@@ -12,6 +12,9 @@
  * pas d'un code malveillant. Le contrôle total, c'est « Prudent ».
  */
 import { spawn } from "node:child_process";
+import { closeSync, openSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export type CommandPolicy = "ask" | "safe" | "auto";
 
@@ -82,7 +85,7 @@ function safeEnv(): NodeJS.ProcessEnv {
   return { ...env, CI: "1", TERM: "dumb", NO_COLOR: "1", PYTHONDONTWRITEBYTECODE: "1", PYTHONUNBUFFERED: "1" };
 }
 
-function trimOutput(out: string, max: number): string {
+export function trimOutput(out: string, max: number): string {
   return out.length > max ? `${out.slice(0, 3_000)}\n[…sortie tronquée…]\n${out.slice(-(max - 3_000))}` : out;
 }
 
@@ -94,14 +97,61 @@ export interface RunCommandOptions {
   maxOutput?: number;
 }
 
-/** Lance un programme sans l'attendre (application graphique…) ; sa sortie n'est pas capturée. */
-export function launchCommand(command: string, cwd: string): Promise<number | undefined> {
+export interface LaunchResult {
+  pid?: number;
+  /** Le programme s'est arrêté pendant la surveillance (souvent : plantage au démarrage). */
+  exited: boolean;
+  exitCode: number | null;
+  /** Sortie des premières secondes. */
+  output: string;
+  /** Journal complet de la sortie (le programme continue d'y écrire). */
+  logPath: string;
+}
+
+export interface LaunchOptions {
+  /** Durée de surveillance avant de rendre la main. */
+  watchMs?: number;
+  /** Appelé quand le programme se termine, même bien après la surveillance. */
+  onExit?: (exitCode: number | null) => void;
+}
+
+/**
+ * Lance un programme sans l'attendre (application graphique…). Surveille les premières
+ * secondes : s'il plante au démarrage, l'erreur est renvoyée au lieu d'être perdue.
+ */
+export function launchCommand(command: string, cwd: string, opts: LaunchOptions = {}): Promise<LaunchResult> {
+  const watchMs = opts.watchMs ?? 2_500;
+  const logPath = join(tmpdir(), `relay-launch-${process.pid}-${Date.now()}.log`);
+  const fd = openSync(logPath, "w");
   return new Promise((resolveLaunch, reject) => {
-    const child = spawn("bash", ["-c", command], { cwd, env: safeEnv(), detached: true, stdio: "ignore" });
-    child.once("error", reject);
-    child.once("spawn", () => {
+    const child = spawn("bash", ["-c", command], { cwd, env: safeEnv(), detached: true, stdio: ["ignore", fd, fd] });
+    closeSync(fd); // l'enfant garde sa copie
+    let exitCode: number | null | undefined;
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       child.unref();
-      resolveLaunch(child.pid);
+      let output = "";
+      try {
+        output = trimOutput(readFileSync(logPath, "utf8"), 8_000);
+      } catch {
+        /* journal illisible : sortie vide */
+      }
+      resolveLaunch({ ...(child.pid !== undefined ? { pid: child.pid } : {}), exited: exitCode !== undefined, exitCode: exitCode ?? null, output, logPath });
+    };
+    const timer = setTimeout(finish, watchMs);
+    child.once("error", (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.once("exit", (code) => {
+      exitCode = code;
+      opts.onExit?.(code);
+      finish();
     });
   });
 }

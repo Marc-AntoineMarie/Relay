@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSyn
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** Dossiers ignorés dans les listes et aperçus (dépendances, caches, VCS). */
-const IGNORED = new Set([".git", "node_modules", "__pycache__", ".venv", "venv", ".pytest_cache", ".mypy_cache", "dist", "build", ".idea"]);
+const IGNORED = new Set([".relay", ".git", "node_modules", "__pycache__", ".venv", "venv", ".pytest_cache", ".mypy_cache", "dist", "build", ".idea"]);
 const MAX_FILES = 400;
 
 export interface WorkspaceFile {
