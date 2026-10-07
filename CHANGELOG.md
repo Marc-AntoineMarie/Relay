@@ -8,6 +8,17 @@ en même temps que le commit correspondant (un bloc par commit, le plus récent 
 
 ## [Non publié] — v0.1.0 en cours (+ début dashboard v0.3)
 
+### (ce commit) — feat: dashboard web React + Vite
+
+- **`packages/web`** : app React + Vite, **dark mode**. Panneau latéral « Backends &
+  clés » (voyant prêt/en attente, saisie de clé → `.env` côté serveur, lien pour obtenir
+  une clé gratuite), carte « Run » (prompt + modèle), **DAG visuel** (nœuds + flèches par
+  colonnes de dépendance, statut en direct, modèle + coût par nœud), barre de métriques
+  (payé vs équivalent API, économies routage et facturation, tokens, durée).
+- Flux temps réel via SSE (`/api/run`) ; en dev, proxy Vite `/api` → serveur local.
+- **Scripts racine** : `pnpm dashboard` (build + lance), `pnpm web:dev`.
+
+
 ### (ce commit) — feat: serveur local + fabrique de providers partagée
 
 - **`providers/factory.ts`** : `createProvider(name)`, `PROVIDER_PRESETS` (anthropic,

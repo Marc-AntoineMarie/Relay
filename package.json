@@ -12,7 +12,11 @@
     "build": "tsc -b",
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "web:build": "pnpm --filter @relay/web build",
+    "web:dev": "pnpm --filter @relay/web dev",
+    "server": "node packages/server/dist/index.js",
+    "dashboard": "pnpm build && pnpm web:build && pnpm server"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
