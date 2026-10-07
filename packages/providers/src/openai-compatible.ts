@@ -44,7 +44,17 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   async models(): Promise<ModelInfo[]> {
-    return [];
+    try {
+      const list = await this.client.models.list();
+      const out: ModelInfo[] = [];
+      for await (const m of list) {
+        // Gemini renvoie "models/gemini-2.0-flash" → on garde l'id court.
+        out.push({ id: m.id.replace(/^models\//, "") });
+      }
+      return out;
+    } catch {
+      return [];
+    }
   }
 
   estimateCost(model: string, inputTokens: number, outputTokens: number): number {

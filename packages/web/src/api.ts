@@ -6,6 +6,16 @@ export async function getState(): Promise<AppState> {
   return (await res.json()) as AppState;
 }
 
+export async function getModels(provider: string): Promise<string[]> {
+  try {
+    const res = await fetch(`/api/models?provider=${encodeURIComponent(provider)}`);
+    const data = (await res.json()) as { models?: string[] };
+    return data.models ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function setKey(provider: string, value: string): Promise<ProviderReadiness[]> {
   const res = await fetch("/api/keys", {
     method: "POST",

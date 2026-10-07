@@ -109,6 +109,17 @@ function handleState(res: ServerResponse): void {
   });
 }
 
+async function handleModels(fullUrl: string, res: ServerResponse): Promise<void> {
+  const name = new URL(fullUrl, "http://localhost").searchParams.get("provider") ?? "";
+  try {
+    const provider = createProvider(name, { cwd: ROOT_DIR });
+    const models = await provider.models();
+    sendJson(res, 200, { models: models.map((m) => m.id) });
+  } catch (err) {
+    sendJson(res, 200, { models: [], error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 async function handleKeys(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = (await readBody(req)) as { provider?: string; value?: string };
   const preset = body.provider ? PROVIDER_PRESETS[body.provider] : undefined;
@@ -212,6 +223,7 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
   void (async () => {
     try {
       if (url === "/api/state" && req.method === "GET") return handleState(res);
+      if (url === "/api/models" && req.method === "GET") return await handleModels(req.url ?? "", res);
       if (url === "/api/keys" && req.method === "POST") return await handleKeys(req, res);
       if (url === "/api/run" && req.method === "POST") return await handleRun(req, res);
       return serveStatic(req, res);

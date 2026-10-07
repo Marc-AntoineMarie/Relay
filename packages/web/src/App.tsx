@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { getState, runPipeline, setKey } from "./api";
+import { getModels, getState, runPipeline, setKey } from "./api";
 import { PipelineView } from "./PipelineView";
 import type { AppState, PipelineMetrics, TaskView } from "./types";
 
@@ -23,6 +23,7 @@ export default function App(): React.JSX.Element {
   const [backend, setBackend] = useState<{ name: string; billing: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [keyDraft, setKeyDraft] = useState<Record<string, string>>({});
+  const [detectedModels, setDetectedModels] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,6 +58,28 @@ export default function App(): React.JSX.Element {
   );
 
   const needsModel = selected?.needsModelOverride === true;
+
+  // Détection automatique des modèles disponibles avec la clé du backend sélectionné.
+  useEffect(() => {
+    if (!needsModel || selected?.ready !== true) {
+      setDetectedModels([]);
+      return;
+    }
+    let cancelled = false;
+    getModels(provider).then((ms) => {
+      if (cancelled) return;
+      setDetectedModels(ms);
+      if (ms.length > 0 && model.trim().length === 0) {
+        const preferred = ms.find((m) => m.includes("flash")) ?? ms[0];
+        if (preferred !== undefined) setModel(preferred);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, needsModel, selected?.ready]);
+
   const canRun =
     !running &&
     prompt.trim().length > 0 &&
@@ -204,13 +227,24 @@ export default function App(): React.JSX.Element {
             <div className="run-head">
               <strong>{selected?.label ?? provider}</strong>
               {needsModel ? (
-                <input
-                  className="model-input"
-                  list="model-hints"
-                  placeholder="modèle (ex. gemini-2.0-flash)"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                />
+                detectedModels.length > 0 ? (
+                  <select className="model-input" value={model} onChange={(e) => setModel(e.target.value)}>
+                    <option value="">— choisis un modèle ({detectedModels.length} détectés) —</option>
+                    {detectedModels.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="model-input"
+                    list="model-hints"
+                    placeholder="modèle (ex. gemini-2.0-flash)"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                  />
+                )
               ) : (
                 <span className="muted small">routes par défaut (Haiku / Sonnet / Opus)</span>
               )}
