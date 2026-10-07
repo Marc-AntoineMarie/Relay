@@ -8,14 +8,40 @@ import { MetricsBar, Segmented, TaskDetail, TierPicker, money } from "./componen
 import { ZoomableDag } from "./PipelineView";
 import { BILLING, useRelay, type Relay } from "./store";
 import type { LogEntry, Phase, Strategy } from "./types";
+import { ErrorDetail } from "./workspace-panels";
 
 export function ComposerPanel(): React.JSX.Element {
   const r = useRelay();
+  const runName = r.workspace?.split(/[\\/]/).filter(Boolean).at(-1);
   return (
     <div className="panel">
+      {r.workspace !== null && r.settings.agentic && !r.busy ? (
+        <div className={`session-chip ${r.continuing ? "on" : ""}`}>
+          {r.continuing ? (
+            <>
+              ↪ Suite dans <code title={r.workspace}>{runName}</code>
+              <span className="muted small">les modèles reçoivent le dossier et l'historique du projet</span>
+              <button className="link" onClick={() => r.setContinueSession(false)}>
+                nouveau projet
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="muted small">Nouveau projet (nouveau dossier)</span>
+              <button className="link" onClick={() => r.setContinueSession(true)}>
+                continuer plutôt dans {runName}
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
       <textarea
         className="prompt"
-        placeholder="Décris ce que tu veux… ex. « Crée une calculatrice en Python avec ses tests »"
+        placeholder={
+          r.continuing
+            ? "Décris la suite ou ce qui ne va pas… ex. « le bouton = ne fait rien », « ajoute un historique des calculs »"
+            : "Décris ce que tu veux… ex. « Crée une calculatrice en Python avec ses tests »"
+        }
         value={r.prompt}
         onChange={(e) => r.setPrompt(e.target.value)}
         onKeyDown={(e) => (e.ctrlKey || e.metaKey) && e.key === "Enter" && r.canRun && void r.run()}
@@ -28,10 +54,10 @@ export function ComposerPanel(): React.JSX.Element {
           </button>
         ) : (
           <button className="run-btn" disabled={!r.canRun} onClick={() => void r.run()}>
-            Lancer le pipeline
+            {r.continuing ? "Continuer" : "Lancer le pipeline"}
           </button>
         )}
-        <Stepper phase={r.phase} done={r.doneCount} total={r.views.length} elapsed={r.elapsed} />
+        <Stepper phase={r.phase} done={r.doneCount} total={r.taskCount} elapsed={r.elapsed} />
         {r.runInfo !== null ? (
           <span className="muted small">
             {r.runInfo.mode === "auto" ? `auto · ${STRATEGY_LABEL[r.runInfo.strategy ?? "balanced"]}` : "manuel"} ·{" "}
@@ -70,7 +96,7 @@ export function RoutingPanel(): React.JSX.Element {
 }
 
 function AutoRouting({ r }: { r: Relay }): React.JSX.Element {
-  const routed = r.views.filter((v) => v.model !== undefined);
+  const routed = r.views.filter((v) => v.model !== undefined && v.userError === undefined);
   return (
     <>
       <div className="field">
@@ -211,7 +237,7 @@ export function DetailPanel(): React.JSX.Element {
   const r = useRelay();
   return (
     <div className="panel">
-      <TaskDetail view={r.selectedView} />
+      {r.selectedView?.userError !== undefined ? <ErrorDetail err={r.selectedView.userError} /> : <TaskDetail view={r.selectedView} />}
     </div>
   );
 }

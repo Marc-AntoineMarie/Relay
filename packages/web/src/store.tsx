@@ -13,6 +13,7 @@ import {
   getModels,
   getPool,
   getSettings,
+  getLaunches,
   getState,
   launchInWorkspace,
   listFiles,
@@ -22,6 +23,7 @@ import {
   runPipeline,
   saveSettings,
   setKey,
+  stopLaunch,
   testKey,
   type RunBody,
 } from "./api";
@@ -30,6 +32,7 @@ import {
   type AccountPolicy,
   type ApprovalRequest,
   type CommandView,
+  type FixRequest,
   type RunDir,
   type WorkspaceFile,
   type AppState,
@@ -104,6 +107,16 @@ const DEFAULT_SETTINGS: Settings = {
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/** Tâches du tour en cours (sans les nœuds d'erreur ni les tours précédents). */
+const roundViews = (vs: TaskView[], round: number): TaskView[] =>
+  vs.filter((v) => v.userError === undefined && (round < 2 || v.task.id.startsWith(`${round}.`)));
+
+/** Tâches dont rien ne dépend : la « fin » actuelle du graphe. */
+const sinks = (vs: TaskView[]): string[] => {
+  const used = new Set(vs.flatMap((v) => v.task.dependsOn));
+  return vs.filter((v) => !used.has(v.task.id)).map((v) => v.task.id);
+};
+
 function useRelayState() {
   const [state, setState] = useState<AppState | null>(null);
   const [serverDown, setServerDown] = useState(false);
@@ -135,8 +148,20 @@ function useRelayState() {
   const [runs, setRuns] = useState<RunDir[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const userSeq = useRef(0);
+  // Session : la prochaine demande continue dans le dossier courant (contexte transmis aux modèles).
+  const [continueSession, setContinueSession] = useState(true);
+  const [round, setRound] = useState(1);
+  // Aperçu d'une page du dossier (iframe isolée) ; `nonce` force le rechargement.
+  const [preview, setPreview] = useState<{ path: string; nonce: number } | null>(null);
+  const [previewTick, setPreviewTick] = useState(0);
+  // Erreurs rencontrées en testant, remontées dans le graphe (une seule fois par source).
+  const [errorTick, setErrorTick] = useState(0);
+  const errSeq = useRef(0);
+  const raised = useRef(new Set<string>());
 
   const busy = phase === "planning" || phase === "running";
+  const viewsRef = useRef(views);
+  viewsRef.current = views;
   const selected = useMemo(() => state?.providers.find((p) => p.name === provider), [state, provider]);
   const cfg = settings ?? DEFAULT_SETTINGS;
 
@@ -330,6 +355,42 @@ function useRelayState() {
         : [...cs, { id, running: false, ...update }],
     );
 
+  /** Erreur rencontrée en testant : nœud rouge dans le graphe + journal, prêt à « Corriger avec Relay ». */
+  function raiseError(err: FixRequest, key: string): void {
+    if (raised.current.has(key)) return;
+    raised.current.add(key);
+    const id = `err${++errSeq.current}`;
+    setViews((vs) => [
+      ...vs,
+      {
+        task: { id, type: "erreur", tier: "quick", description: `Erreur en testant ${err.source}`, dependsOn: sinks(vs) },
+        status: "failed",
+        output: err.output,
+        provider: "toi",
+        model: "test",
+        error: err.output.slice(-800) || "(aucune sortie)",
+        userError: err,
+      },
+    ]);
+    pushLog({
+      at: Date.now(),
+      level: "error",
+      category: "error",
+      taskId: id,
+      title: `Erreur en testant ${err.source}${err.exitCode !== undefined && err.exitCode !== null ? ` (code ${err.exitCode})` : ""}`,
+      ...(err.output ? { detail: err.output } : {}),
+    });
+    setSelectedId(id);
+    setErrorTick((t) => t + 1);
+  }
+
+  /** Relay corrige : une tâche d'agent dans le même dossier, avec l'erreur et l'historique. */
+  function fixError(err: FixRequest, note?: string): void {
+    if (busy || workspace === null) return;
+    const trimmed = note?.trim();
+    void run({ fix: { ...err, ...(trimmed ? { note: trimmed } : {}) } });
+  }
+
   /** Commande lancée par toi depuis le panneau Exécution (attend la fin, sortie capturée). */
   async function runUserCommand(command: string, stdin?: string): Promise<void> {
     if (workspace === null || command.trim().length === 0) return;
@@ -338,6 +399,7 @@ function useRelayState() {
     try {
       const r = await runInWorkspace(workspace, command, stdin);
       upsertCommand(id, { command, by: "toi", running: false, exitCode: r.exitCode, output: r.output, durationMs: r.durationMs, timedOut: r.timedOut });
+      if (r.exitCode !== 0) raiseError({ source: `« ${command} »`, output: r.output, exitCode: r.exitCode }, id);
       void refreshFiles();
     } catch (e: unknown) {
       upsertCommand(id, { command, by: "toi", running: false, exitCode: null, refused: errorText(e) });
@@ -348,22 +410,70 @@ function useRelayState() {
   async function launchUserCommand(command: string): Promise<void> {
     if (workspace === null || command.trim().length === 0) return;
     const id = `toi-${++userSeq.current}`;
+    upsertCommand(id, { command, by: "toi", running: true });
     try {
-      await launchInWorkspace(workspace, command);
-      upsertCommand(id, { command, by: "toi", running: false, launched: true });
+      const r = await launchInWorkspace(workspace, command);
+      // Arrêté pendant les premières secondes : souvent un plantage au démarrage → on montre l'erreur.
+      upsertCommand(id, {
+        command,
+        by: "toi",
+        running: !r.exited,
+        launched: true,
+        launchId: r.id,
+        output: r.output,
+        ...(r.exited ? { exitCode: r.exitCode } : {}),
+      });
+      if (r.exited && r.exitCode !== 0) raiseError({ source: `« ${command} »`, output: r.output, exitCode: r.exitCode }, r.id);
     } catch (e: unknown) {
       upsertCommand(id, { command, by: "toi", running: false, exitCode: null, refused: errorText(e) });
     }
   }
 
-  async function openIn(target: "folder" | "vscode"): Promise<void> {
+  async function openIn(target: "folder" | "vscode", path?: string): Promise<void> {
     if (workspace === null) return;
     try {
-      await openWorkspace(workspace, target);
+      await openWorkspace(workspace, target, path);
     } catch (e: unknown) {
       setError({ kind: "config", title: "Ouverture impossible", detail: errorText(e) });
     }
   }
+
+  function stopApp(c: CommandView): void {
+    if (c.launchId !== undefined) void stopLaunch(c.launchId).catch(() => undefined);
+  }
+
+  // Apps lancées : on suit leur sortie et leur fermeture ; une erreur (même après coup) remonte.
+  const watching = commands.some((c) => c.launchId !== undefined && c.running);
+  useEffect(() => {
+    if (!watching || workspace === null) return;
+    const root = workspace;
+    const id = window.setInterval(() => {
+      void getLaunches(root).then(({ launches }) => {
+        for (const l of launches) {
+          setCommands((cs) =>
+            cs.map((c) => (c.launchId === l.id ? { ...c, output: l.output, running: l.running, ...(l.running ? {} : { exitCode: l.exitCode }) } : c)),
+          );
+          const crashed = !l.running && l.exitCode !== null && l.exitCode !== 0;
+          if (crashed || /Traceback|Exception|Error:/.test(l.output)) {
+            raiseError({ source: `« ${l.command} »`, output: l.output, ...(l.running ? {} : { exitCode: l.exitCode }) }, l.id);
+          }
+        }
+      }, () => undefined);
+    }, 1_500);
+    return () => clearInterval(id);
+  }, [watching, workspace]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function openPreview(path: string): void {
+    setPreview({ path, nonce: Date.now() });
+    setPreviewTick((t) => t + 1);
+  }
+
+  // Run terminé avec une page web : l'aperçu est prêt (sans changer d'onglet).
+  useEffect(() => {
+    if (phase !== "done" || preview !== null) return;
+    const page = files.find((f) => /\.html?$/i.test(f.path));
+    if (page !== undefined) setPreview({ path: page.path, nonce: Date.now() });
+  }, [phase, files]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function approve(key: string, ok: boolean): void {
     setApprovals((as) => as.filter((a) => a.key !== key));
@@ -377,30 +487,48 @@ function useRelayState() {
   const pushLog = (entry: LogEntry): void =>
     setLogs((ls) => (ls.length >= MAX_LOGS ? [...ls.slice(-MAX_LOGS + 1), entry] : [...ls, entry]));
 
-  async function run(): Promise<void> {
+  async function run(opts: { fix?: FixRequest } = {}): Promise<void> {
+    const fix = opts.fix;
+    // Suite (ou correction) : même dossier, même graphe, même journal ; sinon nouveau projet.
+    const continuing = workspace !== null && cfg.agentic && (fix !== undefined || continueSession);
+    const text = fix !== undefined ? `Corriger l'erreur rencontrée en testant ${fix.source}` : prompt;
+    const session = continuing && workspace !== null ? { workspace, ...(fix !== undefined ? { fix } : {}) } : {};
     let body: RunBody;
     if (cfg.mode === "auto") {
-      body = { mode: "auto", prompt, strategy: cfg.strategy, policies: cfg.policies };
+      body = { mode: "auto", prompt: text, strategy: cfg.strategy, policies: cfg.policies, ...session };
     } else {
       if (tiers === null) return;
-      body = { mode: "manual", prompt, provider, models: tiers };
+      body = { mode: "manual", prompt: text, provider, models: tiers, ...session };
     }
     const ac = new AbortController();
     abortRef.current = ac;
     setPhase("planning");
     setError(null);
     setMetrics(null);
-    setSynthesis(null);
-    setViews([]);
-    setLogs([]);
     setRunInfo(null);
-    setSelectedId(null);
     setStartedAt(Date.now());
-    setWorkspace(null);
-    setFiles([]);
-    setCommands([]);
     setApprovals([]);
-    let runRoot: string | null = null;
+    const prevSinks = continuing ? sinks(viewsRef.current) : [];
+    if (continuing) {
+      if (fix === undefined) setSynthesis(null);
+      pushLog({
+        at: Date.now(),
+        level: "info",
+        category: "info",
+        title: fix !== undefined ? `── Correction : ${fix.source}${fix.note ? ` — ${fix.note}` : ""} ──` : `── Suite : ${text} ──`,
+      });
+    } else {
+      setSynthesis(null);
+      setViews([]);
+      setLogs([]);
+      setSelectedId(null);
+      setWorkspace(null);
+      setFiles([]);
+      setCommands([]);
+      setPreview(null);
+      raised.current.clear();
+    }
+    let runRoot: string | null = continuing ? workspace : null;
 
     try {
       for await (const ev of runPipeline(body, ac.signal)) {
@@ -411,10 +539,17 @@ function useRelayState() {
           case "log":
             pushLog(ev.entry);
             break;
-          case "pipeline:plan":
+          case "pipeline:plan": {
             setPhase("running");
-            setViews(ev.tasks.map((task) => ({ task, status: "pending", output: "" })));
+            // Les premières tâches du tour se rattachent (à l'affichage) à la fin du tour précédent.
+            const fresh = ev.tasks.map((task) => ({
+              task: continuing && task.dependsOn.length === 0 ? { ...task, dependsOn: prevSinks } : task,
+              status: "pending" as const,
+              output: "",
+            }));
+            setViews((vs) => (continuing ? [...vs, ...fresh] : fresh));
             break;
+          }
           case "task:route":
             patch(ev.taskId, () => ({ provider: ev.provider, model: ev.model, reason: ev.reason, alternatives: ev.alternatives }));
             break;
@@ -454,6 +589,7 @@ function useRelayState() {
             break;
           case "workspace":
             runRoot = ev.root;
+            setRound(ev.round ?? 1);
             setWorkspace(ev.root);
             break;
           case "file:write":
@@ -461,6 +597,7 @@ function useRelayState() {
               [...fs.filter((f) => f.path !== ev.path), { path: ev.path, size: ev.bytes }].sort((a, b) => a.path.localeCompare(b.path)),
             );
             setLastWrite({ path: ev.path, at: Date.now() });
+            setPreview((p) => (p === null ? p : { ...p, nonce: Date.now() })); // l'aperçu suit les corrections
             break;
           case "command:start":
             upsertCommand(ev.id, { taskId: ev.taskId, command: ev.command, by: "agent", running: true });
@@ -520,6 +657,7 @@ function useRelayState() {
       setApprovals([]);
       void refreshRuns();
       if (runRoot !== null) void refreshFiles(runRoot); // fichiers créés par les commandes aussi
+      setContinueSession(true); // la prochaine demande continue dans ce dossier
       setNow(Date.now()); // fige le chrono sur la durée réelle
       setPhase((p) => (p === "planning" || p === "running" ? "done" : p));
     }
@@ -563,7 +701,8 @@ function useRelayState() {
     setKeyDraft,
     keyTests,
     elapsed: startedAt !== null ? Math.max(0, Math.round((now - startedAt) / 1000)) : 0,
-    doneCount: views.filter((v) => v.status === "done").length,
+    doneCount: roundViews(views, round).filter((v) => v.status === "done").length,
+    taskCount: roundViews(views, round).length,
     canRun:
       !busy &&
       prompt.trim().length > 0 &&
@@ -591,7 +730,22 @@ function useRelayState() {
     runs,
     refreshFiles: () => void refreshFiles(),
     refreshRuns: () => void refreshRuns(),
-    selectWorkspace,
+    selectWorkspace: (root: string) => {
+      selectWorkspace(root);
+      setContinueSession(true);
+      setRound(1);
+    },
+    continuing: workspace !== null && cfg.agentic && continueSession,
+    setContinueSession,
+    round,
+    raiseError,
+    fixError,
+    stopApp,
+    preview,
+    previewTick,
+    openPreview,
+    reloadPreview: () => setPreview((p) => (p === null ? p : { ...p, nonce: Date.now() })),
+    errorTick,
     runUserCommand,
     launchUserCommand,
     clearCommands: () => setCommands([]),

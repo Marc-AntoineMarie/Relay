@@ -51,9 +51,26 @@ export interface CommandView {
   durationMs?: number;
   timedOut?: boolean;
   refused?: string;
-  /** Lancée sans attendre (application graphique). */
+  /** Lancée sans attendre (application graphique), suivie jusqu'à sa fermeture. */
   launched?: boolean;
+  launchId?: string;
   by: "agent" | "toi";
+}
+
+/** Erreur rencontrée en testant, à faire corriger par Relay. */
+export interface FixRequest {
+  source: string;
+  output: string;
+  exitCode?: number | null;
+  note?: string;
+}
+
+export interface LaunchState {
+  id: string;
+  command: string;
+  running: boolean;
+  exitCode: number | null;
+  output: string;
 }
 
 export interface ApprovalRequest {
@@ -230,7 +247,7 @@ export type ServerEvent =
       to: { provider?: string; model: string };
       reason: string;
     }
-  | { type: "workspace"; root: string; policy: CommandPolicy }
+  | { type: "workspace"; root: string; policy: CommandPolicy; round?: number }
   | { type: "file:write"; taskId: string; path: string; bytes: number; created: boolean }
   | { type: "command:start"; taskId: string; id: string; command: string }
   | {
@@ -272,6 +289,8 @@ export interface TaskView {
   commands?: Array<{ command: string; exitCode: number | null }>;
   checksFailed?: boolean;
   escalatedFrom?: string;
+  /** Nœud « erreur rencontrée en testant » (pas une tâche du moteur). */
+  userError?: FixRequest;
 }
 
 export type Phase = "idle" | "planning" | "running" | "done" | "failed" | "stopped";

@@ -93,7 +93,11 @@ function PipelineView({ views, selectedId, onSelect, layout }: DagProps & { layo
             title={v.task.description}
           >
             <div className="node-head">
-              <span className={`tier tier-${v.task.tier}`}>{v.task.tier}</span>
+              {v.userError !== undefined ? (
+                <span className="tier tier-error">erreur</span>
+              ) : (
+                <span className={`tier tier-${v.task.tier}`}>{v.task.tier}</span>
+              )}
               <span className="node-type">{v.task.type}</span>
               <span className={`dot dot-${v.status}`} />
             </div>

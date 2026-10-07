@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { readFile } from "./api";
 import { useRelay } from "./store";
-import type { CommandView, WorkspaceFile } from "./types";
+import type { CommandView, FixRequest, WorkspaceFile } from "./types";
 
 const size = (n: number): string => (n < 1024 ? `${n} o` : `${(n / 1024).toFixed(1)} Ko`);
 const runLabel = (root: string): string => root.split(/[\\/]/).filter(Boolean).at(-1) ?? root;
@@ -95,7 +95,19 @@ export function FilesPanel(): React.JSX.Element {
             <p className="inline-error">⚠ {error}</p>
           ) : content !== null && content.path === selected ? (
             <>
-              <div className="file-view-head muted small">{content.path}</div>
+              <div className="file-view-head muted small">
+                {content.path}
+                {/\.html?$/i.test(content.path) ? (
+                  <>
+                    <button className="link" onClick={() => r.openPreview(content.path)}>
+                      Aperçu dans Relay
+                    </button>
+                    <button className="link" onClick={() => void r.openIn("folder", content.path)}>
+                      Ouvrir dans le navigateur
+                    </button>
+                  </>
+                ) : null}
+              </div>
               <pre className="output file-content">
                 {content.text.split("\n").map((line, i, all) =>
                   i === all.length - 1 && line === "" ? null : (
@@ -196,7 +208,15 @@ export function ExecPanel(): React.JSX.Element {
       <ol ref={listRef} className="cmd-list">
         {r.commands.length === 0 ? <li className="muted small cmd-empty">Aucune commande pour l'instant.</li> : null}
         {r.commands.map((c, i) => (
-          <CommandItem key={c.id} c={c} open={i === r.commands.length - 1} onReplay={() => setCommand(c.command)} />
+          <CommandItem
+            key={c.id}
+            c={c}
+            open={i === r.commands.length - 1}
+            busy={r.busy}
+            onReplay={() => setCommand(c.command)}
+            onStop={() => r.stopApp(c)}
+            onFix={() => r.fixError({ source: `« ${c.command} »`, output: c.output ?? "", exitCode: c.exitCode ?? null })}
+          />
         ))}
       </ol>
       <div className="runner">
@@ -245,16 +265,33 @@ export function ExecPanel(): React.JSX.Element {
   );
 }
 
-function CommandItem({ c, open, onReplay }: { c: CommandView; open: boolean; onReplay: () => void }): React.JSX.Element {
+const ERROR_OUTPUT = /Traceback|Exception|Error:/;
+
+function CommandItem(props: {
+  c: CommandView;
+  open: boolean;
+  busy: boolean;
+  onReplay: () => void;
+  onStop: () => void;
+  onFix: () => void;
+}): React.JSX.Element {
+  const { c, open } = props;
   const [expanded, setExpanded] = useState(open);
   useEffect(() => setExpanded(open), [open]);
+  const app = c.launched === true;
+  const failed =
+    c.refused === undefined && !(app && c.running) && ((c.exitCode !== undefined && c.exitCode !== 0 && c.exitCode !== null) || c.timedOut === true);
+  // Une app peut planter sans se fermer (exception dans un clic) : on le voit dans sa sortie.
+  const broken = failed || (app && ERROR_OUTPUT.test(c.output ?? ""));
   const state = c.running
-    ? { icon: "…", cls: "run", text: "en cours" }
+    ? { icon: "…", cls: "run", text: app ? "fenêtre ouverte (sortie suivie)" : "en cours" }
     : c.refused !== undefined
       ? { icon: "⊘", cls: "refused", text: c.refused }
-      : c.launched === true
-        ? { icon: "↗", cls: "ok", text: "lancée (fenêtre à part)" }
-        : c.timedOut === true
+      : app && c.exitCode === null
+        ? { icon: "■", cls: "ok", text: "fermée" }
+        : app && c.exitCode === 0
+          ? { icon: "↗", cls: "ok", text: "fermée normalement" }
+          : c.timedOut === true
           ? { icon: "⏱", cls: "fail", text: "délai dépassé" }
           : c.exitCode === 0
             ? { icon: "✓", cls: "ok", text: "code 0" }
@@ -262,19 +299,27 @@ function CommandItem({ c, open, onReplay }: { c: CommandView; open: boolean; onR
   return (
     <li className={`cmd cmd-${state.cls}`}>
       <button className="cmd-line" onClick={() => setExpanded((x) => !x)}>
-        <span className="cmd-icon">{c.running ? <span className="spinner" /> : state.icon}</span>
+        <span className="cmd-icon">{c.running && !app ? <span className="spinner" /> : app && c.running ? "↗" : state.icon}</span>
         <code className="cmd-text">{c.command}</code>
         <span className="muted small">
           {c.by === "agent" ? `agent #${c.taskId ?? "?"}` : "toi"} · {state.text}
           {c.durationMs !== undefined && !c.running ? ` · ${(c.durationMs / 1000).toFixed(1)} s` : ""}
         </span>
       </button>
-      {expanded && !c.running ? (
+      {expanded && (!c.running || app) ? (
         <div className="cmd-out">
-          {c.output !== undefined ? <pre className="log-detail">{c.output || "(aucune sortie)"}</pre> : null}
-          <button className="link" onClick={onReplay}>
-            reprendre cette commande
-          </button>
+          {c.output !== undefined ? <pre className="log-detail">{c.output || "(aucune sortie pour l'instant)"}</pre> : null}
+          <div className="cmd-actions">
+            {broken ? (
+              <button className="fix-btn" disabled={props.busy} onClick={props.onFix} title="Relay corrige dans le même dossier, avec cette erreur et l'historique du projet">
+                Corriger avec Relay
+              </button>
+            ) : null}
+            {app && c.running ? <button onClick={props.onStop}>Fermer l'app</button> : null}
+            <button className="link" onClick={props.onReplay}>
+              reprendre cette commande
+            </button>
+          </div>
         </div>
       ) : null}
     </li>
@@ -298,6 +343,129 @@ export function ApprovalBar(): React.JSX.Element | null {
           <button onClick={() => r.approve(a.key, false)}>Refuser</button>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Erreur rencontrée en testant (nœud rouge du graphe) : la faire corriger par Relay. */
+export function ErrorDetail({ err, onBack }: { err: FixRequest; onBack?: () => void }): React.JSX.Element {
+  const r = useRelay();
+  const [note, setNote] = useState("");
+  return (
+    <aside className="detail">
+      <div className="detail-head">
+        <span className="tier tier-error">erreur</span>
+        <span className="muted small">rencontrée en testant</span>
+      </div>
+      <h3 className="detail-title">{err.source}</h3>
+      {err.exitCode !== undefined && err.exitCode !== null ? <p className="muted small">code de sortie {err.exitCode}</p> : null}
+      <pre className="output error-output">{err.output || "(aucune sortie)"}</pre>
+      <label className="field">
+        <span className="field-label">Précision pour les modèles (facultatif)</span>
+        <input
+          placeholder="ex. « la fenêtre s'ouvre mais le bouton = ne fait rien »"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !r.busy && r.fixError(err, note)}
+        />
+      </label>
+      <div className="run-actions">
+        <button className="run-btn" disabled={r.busy} onClick={() => r.fixError(err, note)}>
+          Corriger avec Relay
+        </button>
+        <span className="muted small">
+          Une tâche d'agent reprend le dossier avec cette erreur et l'historique du projet, corrige, puis revérifie (escalade si
+          besoin).
+        </span>
+      </div>
+      {onBack !== undefined ? (
+        <button className="link" onClick={onBack}>
+          retour
+        </button>
+      ) : null}
+    </aside>
+  );
+}
+
+/** Aperçu d'une page du dossier dans Relay : les erreurs JavaScript remontent au pipeline. */
+export function PreviewPanel(): React.JSX.Element {
+  const r = useRelay();
+  const frame = useRef<HTMLIFrameElement>(null);
+  const [errors, setErrors] = useState<string[]>([]);
+  const p = r.preview;
+  const run = r.workspace !== null ? runLabel(r.workspace) : null;
+  const src = p !== null && run !== null ? `/ws/${encodeURIComponent(run)}/${p.path.split("/").map(encodeURIComponent).join("/")}?v=${p.nonce}` : null;
+  const pages = r.files.filter((f) => /\.html?$/i.test(f.path));
+
+  useEffect(() => setErrors([]), [src]);
+
+  useEffect(() => {
+    const onMessage = (e: MessageEvent): void => {
+      const data = e.data as { relayPreview?: boolean; message?: string } | null;
+      if (e.source !== frame.current?.contentWindow || data?.relayPreview !== true) return;
+      setErrors((es) => (es.length >= 30 ? es : [...es, String(data.message)]));
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  // Remonte au pipeline une fois par chargement, en regroupant les premières erreurs.
+  useEffect(() => {
+    if (errors.length === 0 || p === null) return;
+    const t = window.setTimeout(() => r.raiseError({ source: `l'aperçu de ${p.path}`, output: errors.join("\n") }, `aperçu:${p.path}:${p.nonce}`), 700);
+    return () => clearTimeout(t);
+  }, [errors.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (src === null || p === null) {
+    return (
+      <div className="panel">
+        <p className="muted dag-empty">
+          {pages.length > 0
+            ? "Choisis une page dans Fichiers › « Aperçu dans Relay »."
+            : "Quand un run crée une page web (.html), elle s'affiche ici et ses erreurs JavaScript remontent dans le pipeline."}
+        </p>
+        {pages.length > 0 ? (
+          <div className="chips">
+            {pages.map((f) => (
+              <button key={f.path} className="chip" onClick={() => r.openPreview(f.path)}>
+                {f.path}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel panel-flush preview">
+      <div className="files-tools">
+        <select value={p.path} onChange={(e) => r.openPreview(e.target.value)}>
+          {(pages.some((f) => f.path === p.path) ? pages : [{ path: p.path, size: 0 }, ...pages]).map((f) => (
+            <option key={f.path} value={f.path}>
+              {f.path}
+            </option>
+          ))}
+        </select>
+        <button onClick={r.reloadPreview} title="Recharger la page">
+          ↻
+        </button>
+        <button onClick={() => void r.openIn("folder", p.path)}>Navigateur</button>
+      </div>
+      {/* Isolée (sandbox sans même origine) : la page ne peut pas appeler l'API de Relay. */}
+      <iframe ref={frame} key={src} className="preview-frame" src={src} title="Aperçu" sandbox="allow-scripts allow-forms allow-modals allow-popups" />
+      {errors.length > 0 ? (
+        <div className="preview-errors">
+          <span className="inline-error">⚠ {errors.length} erreur(s) JavaScript : {errors[0]}</span>
+          <button
+            className="fix-btn"
+            disabled={r.busy}
+            onClick={() => r.fixError({ source: `l'aperçu de ${p.path}`, output: errors.join("\n") })}
+          >
+            Corriger avec Relay
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

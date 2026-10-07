@@ -10,6 +10,8 @@ import type {
   TierModels,
   KeyTestResult,
   CommandResult,
+  FixRequest,
+  LaunchState,
   RunDir,
   WorkspaceFile,
 } from "./types";
@@ -85,18 +87,32 @@ export const readFile = (root: string, path: string): Promise<{ path: string; co
 export const runInWorkspace = (root: string, command: string, stdin?: string): Promise<CommandResult> =>
   call("/api/workspace/run", post({ root, command, ...(stdin ? { stdin } : {}) }));
 
-export const launchInWorkspace = (root: string, command: string): Promise<{ launched: boolean; pid?: number }> =>
+export const launchInWorkspace = (
+  root: string,
+  command: string,
+): Promise<{ id: string; pid?: number; exited: boolean; exitCode: number | null; output: string }> =>
   call("/api/workspace/run", post({ root, command, detached: true }));
 
-export const openWorkspace = (root: string, target: "folder" | "vscode"): Promise<{ ok: boolean }> =>
-  call("/api/workspace/open", post({ root, target }));
+export const openWorkspace = (root: string, target: "folder" | "vscode", path?: string): Promise<{ ok: boolean }> =>
+  call("/api/workspace/open", post({ root, target, ...(path !== undefined ? { path } : {}) }));
+
+export const getLaunches = (root: string): Promise<{ launches: LaunchState[] }> =>
+  call(`/api/workspace/launches?root=${encodeURIComponent(root)}`);
+
+export const stopLaunch = (id: string): Promise<{ found: boolean }> => call("/api/workspace/stop", post({ id }));
 
 export const answerApproval = (key: string, ok: boolean): Promise<{ found: boolean }> =>
   call("/api/approve", post({ key, ok }));
 
-export type RunBody =
+export type RunBody = (
   | { mode: "auto"; prompt: string; strategy: Strategy; policies: Record<string, AccountPolicy> }
-  | { mode: "manual"; prompt: string; provider: string; models: TierModels };
+  | { mode: "manual"; prompt: string; provider: string; models: TierModels }
+) & {
+  /** Continuer dans le dossier d'un run (session). */
+  workspace?: string;
+  /** Corriger une erreur rencontrée en testant. */
+  fix?: FixRequest;
+};
 
 export async function getPool(): Promise<PoolResponse | null> {
   try {

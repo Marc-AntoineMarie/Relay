@@ -17,7 +17,7 @@ import {
   RoutingPanel,
 } from "./panels";
 import { SettingsView } from "./Settings";
-import { ApprovalBar, ExecPanel, FilesPanel } from "./workspace-panels";
+import { ApprovalBar, ExecPanel, FilesPanel, PreviewPanel } from "./workspace-panels";
 import { BILLING, load, RelayProvider, save, useRelay } from "./store";
 
 const PANELS = {
@@ -30,10 +30,11 @@ const PANELS = {
   journal: JournalPanel,
   files: FilesPanel,
   exec: ExecPanel,
+  preview: PreviewPanel,
 };
 
 /** Incrémenter si la liste des panneaux change (invalide les dispositions mémorisées). */
-const LAYOUT_KEY = "relay.layout.v4";
+const LAYOUT_KEY = "relay.layout.v5";
 
 function defaultLayout(api: DockviewApi): void {
   api.clear();
@@ -42,6 +43,7 @@ function defaultLayout(api: DockviewApi): void {
   api.addPanel({ id: "composer", component: "composer", title: "Demande", position: { referencePanel: "pipeline", direction: "above" } });
   api.addPanel({ id: "detail", component: "detail", title: "Tâche", position: { referencePanel: "pipeline", direction: "right" } });
   api.addPanel({ id: "files", component: "files", title: "Fichiers", position: { referencePanel: "detail", direction: "within" }, inactive: true });
+  api.addPanel({ id: "preview", component: "preview", title: "Aperçu", position: { referencePanel: "detail", direction: "within" }, inactive: true });
   api.addPanel({ id: "result", component: "result", title: "Résultat", position: { referencePanel: "detail", direction: "within" }, inactive: true });
   api.addPanel({ id: "journal", component: "journal", title: "Journal", position: { referencePanel: "pipeline", direction: "below" } });
   api.addPanel({ id: "exec", component: "exec", title: "Exécution", position: { referencePanel: "journal", direction: "within" }, inactive: true });
@@ -86,6 +88,16 @@ function Shell(): React.JSX.Element {
     defaultLayout(api);
     save(LAYOUT_KEY, api.toJSON());
   };
+
+  // Aperçu demandé (Fichiers › « Aperçu dans Relay ») : on montre l'onglet.
+  useEffect(() => {
+    if (r.previewTick > 0) apiRef.current?.getPanel("preview")?.api.setActive();
+  }, [r.previewTick]);
+
+  // Erreur remontée en testant : le détail (avec « Corriger avec Relay ») passe devant.
+  useEffect(() => {
+    if (r.errorTick > 0) apiRef.current?.getPanel("detail")?.api.setActive();
+  }, [r.errorTick]);
 
   // Le livrable final arrive : on montre l'onglet Résultat.
   useEffect(() => {
