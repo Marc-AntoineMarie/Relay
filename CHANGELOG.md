@@ -9,7 +9,22 @@ en même temps que le commit correspondant (un bloc par commit, le plus récent 
 ## [Non publié] — v0.1.0 en cours
 
 Proof of concept CLI : un prompt → décomposition → routing → exécution → métriques.
-Un seul fournisseur (Anthropic), exécution séquentielle.
+Multi-backend (API Anthropic **et** Claude Code sur abonnement), exécution séquentielle.
+
+### `ced1fcb` + (ce commit) — feat: provider Claude Code + métriques multi-backend
+
+- **`providers/claude-code.ts`** : `ClaudeCodeProvider` pilote le binaire `claude` en
+  `-p` (abonnement, sans clé API). Modèle par tâche via `--model`, JSON du décomposeur
+  via `--json-schema`, progression via `--output-format stream-json`. Parsing stream-json
+  en fonction pure testable (`interpretStreamJsonLine`). Sûr par défaut
+  (`permissionMode: "none"`, `--restricted`).
+- **Métriques multi-backend** : `Provider.billing` (`per-token` | `subscription` | `free`) ;
+  `TaskMetrics` passe de `cost` à `referenceCost` (tarif API, échelle commune) +
+  `billedCost` (réel, 0 sur abonnement) ; `PipelineMetrics` → `totalBilledCost` +
+  `totalReferenceCost`. Permet de **prouver l'économie même sans facturation en $**.
+- **CLI** : option `--provider anthropic|claude-code` + fabrique de provider ; affiche le
+  backend, le coût payé **et** le coût équivalent API.
+- **Tests** : parseur stream-json + métadonnées provider (8).
 
 ### `dd3a3a3` — feat: config, moniteur et CLI de bout en bout (étapes 7 et 9)
 

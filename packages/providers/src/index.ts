@@ -8,3 +8,9 @@ export const PROVIDERS_VERSION = "0.1.0";
 
 export { AnthropicProvider } from "./anthropic.js";
 export type { AnthropicProviderOptions } from "./anthropic.js";
+export { ClaudeCodeProvider, ClaudeCodeError, interpretStreamJsonLine } from "./claude-code.js";
+export type {
+  ClaudeCodeProviderOptions,
+  ClaudePermissionMode,
+  InterpretedChunk,
+} from "./claude-code.js";

@@ -13,17 +13,44 @@ import {
   type Pipeline,
   type PipelineEvent,
   type PipelineMetrics,
+  type Provider,
+  type RelayConfig,
 } from "@relay/core";
-import { AnthropicProvider, PROVIDERS_VERSION } from "@relay/providers";
+import { AnthropicProvider, ClaudeCodeProvider, PROVIDERS_VERSION } from "@relay/providers";
 
 const HELP = `relay — orchestrateur de pipeline agentique
 
 Usage :
-  relay "votre prompt"      Décompose, route et exécute le prompt
-  relay --version           Affiche la version
-  relay --help              Affiche cette aide
+  relay "votre prompt"              Décompose, route et exécute le prompt
+  relay --provider claude-code "…"  Utilise Claude Code (ton abonnement, sans clé API)
+  relay --version                   Affiche la version
+  relay --help                      Affiche cette aide
 
-Config : relay.config.json (routes par défaut). Clé : ANTHROPIC_API_KEY dans .env`;
+Backends (--provider) :
+  anthropic    (défaut) API Messages, nécessite ANTHROPIC_API_KEY dans .env
+  claude-code  pilote le binaire 'claude' (abonnement) — aucune clé requise
+
+Config : relay.config.json (routes par défaut).`;
+
+/** Instancie le provider choisi. Lève une erreur lisible si indisponible. */
+function makeProvider(name: string, config: RelayConfig): Provider {
+  switch (name) {
+    case "anthropic": {
+      const apiKey = config.providers["anthropic"]?.apiKey?.trim() || process.env["ANTHROPIC_API_KEY"];
+      if (!apiKey) {
+        throw new ConfigError(
+          "ANTHROPIC_API_KEY manquante. Copie .env.example en .env, ou utilise --provider claude-code.",
+        );
+      }
+      return new AnthropicProvider({ apiKey });
+    }
+    case "claude-code":
+      // Abonnement : aucune clé. permissionMode "none" => pas d'effet de bord disque en v0.1.
+      return new ClaudeCodeProvider({ cwd: process.cwd(), permissionMode: "none" });
+    default:
+      throw new ConfigError(`provider inconnu en v0.1 : ${name} (anthropic | claude-code)`);
+  }
+}
 
 async function main(argv: string[]): Promise<number> {
   const args = argv.slice(2);
@@ -37,7 +64,21 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  const prompt = args.join(" ");
+  // Option --provider <nom> (par défaut : celui du décomposeur dans la config).
+  let providerName: string | undefined;
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--provider") {
+      providerName = args[++i];
+    } else {
+      rest.push(args[i] as string);
+    }
+  }
+  const prompt = rest.join(" ");
+  if (prompt.length === 0) {
+    console.error("Aucun prompt fourni. Exemple : relay \"ajoute une fonction de recherche\"");
+    return 1;
+  }
 
   // Charge .env si présent (best-effort).
   try {
@@ -57,13 +98,19 @@ async function main(argv: string[]): Promise<number> {
     throw err;
   }
 
-  const apiKey = config.providers["anthropic"]?.apiKey?.trim() || process.env["ANTHROPIC_API_KEY"];
-  if (!apiKey) {
-    console.error("ANTHROPIC_API_KEY manquante. Copie .env.example en .env et renseigne ta clé.");
-    return 1;
+  const chosenProvider = providerName ?? config.decomposer.provider;
+  let provider: Provider;
+  try {
+    provider = makeProvider(chosenProvider, config);
+  } catch (err) {
+    if (err instanceof ConfigError) {
+      console.error(err.message);
+      return 1;
+    }
+    throw err;
   }
+  console.log(`\n🔌 Backend : ${provider.name} (facturation : ${provider.billing})`);
 
-  const provider = new AnthropicProvider({ apiKey });
   const router = new Router(config);
 
   for (const warning of router.validate()) console.error(`⚠ ${warning}`);
