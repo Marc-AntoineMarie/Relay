@@ -15,20 +15,30 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, normalize, extname, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import {
+  ConfigError,
   decompose,
   defaultRegistry,
+  describeError,
   execute,
   loadConfig,
   Router,
+  type Effort,
   type PipelineEvent,
   type RelayConfig,
+  type RouteTier,
+  type TierModels,
 } from "@relay/core";
 import {
   createProvider,
+  filterChatModels,
   PROVIDER_PRESETS,
-  ProviderError,
   providerReadiness,
+  suggestTierModels,
 } from "@relay/providers";
+
+const TIERS: readonly RouteTier[] = ["quick", "build", "deep"];
+/** Effort par tier pour les backends à réflexion réglable (reasoning_effort). */
+const TIER_EFFORT: Record<RouteTier, Effort> = { quick: "low", build: "medium", deep: "high" };
 
 const PORT = Number(process.env["RELAY_PORT"] ?? 5174);
 // Racine du dépôt, résolue depuis l'emplacement de ce fichier (packages/server/dist/)
@@ -113,11 +123,41 @@ async function handleModels(fullUrl: string, res: ServerResponse): Promise<void>
   const name = new URL(fullUrl, "http://localhost").searchParams.get("provider") ?? "";
   try {
     const provider = createProvider(name, { cwd: ROOT_DIR });
-    const models = await provider.models();
-    sendJson(res, 200, { models: models.map((m) => m.id) });
+    const raw = (await provider.models()).map((m) => m.id);
+    const models = PROVIDER_PRESETS[name]?.kind === "openai-compatible" ? filterChatModels(raw) : raw;
+    sendJson(res, 200, { models, suggested: suggestTierModels(name, models) ?? null });
   } catch (err) {
-    sendJson(res, 200, { models: [], error: err instanceof Error ? err.message : String(err) });
+    sendJson(res, 200, { models: [], suggested: suggestTierModels(name, []) ?? null, error: describeError(err) });
   }
+}
+
+interface RunBody {
+  prompt?: string;
+  provider?: string;
+  /** Un modèle par tier (routage). */
+  models?: Partial<TierModels>;
+  /** Ancien format : un modèle unique pour tous les tiers. */
+  model?: string;
+}
+
+/**
+ * Applique le routage par tier (choisi dans l'UI, sinon recommandé par le preset).
+ * Sans choix explicite, un backend Claude garde les routes de relay.config.json.
+ */
+function applyTierModels(config: RelayConfig, providerName: string, body: RunBody): void {
+  const preset = PROVIDER_PRESETS[providerName];
+  const chosen: Partial<TierModels> = { ...body.models };
+  if (body.model) for (const t of TIERS) chosen[t] ??= body.model;
+  if (preset?.needsModelOverride !== true && Object.values(chosen).every((m) => !m)) return;
+
+  for (const t of TIERS) {
+    const model = chosen[t] || preset?.tierModels?.[t];
+    if (!model) throw new ConfigError(`aucun modèle choisi pour le tier « ${t} »`);
+    const effort = preset?.reasoningEffort === true ? TIER_EFFORT[t] : config.routes[t].effort;
+    config.routes[t] = { provider: providerName, model, ...(effort !== undefined ? { effort } : {}) };
+  }
+  config.routes.escalate = { ...config.routes.deep };
+  config.decomposer = { ...config.routes.build };
 }
 
 async function handleKeys(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -136,11 +176,12 @@ async function handleKeys(req: IncomingMessage, res: ServerResponse): Promise<vo
 }
 
 function sseWrite(res: ServerResponse, obj: unknown): void {
+  if (res.writableEnded || res.destroyed) return; // client parti
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
 }
 
 async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const body = (await readBody(req)) as { prompt?: string; provider?: string; model?: string };
+  const body = (await readBody(req)) as RunBody;
   const prompt = (body.prompt ?? "").trim();
   if (prompt.length === 0) {
     sendJson(res, 400, { error: "prompt vide" });
@@ -154,22 +195,16 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     "Access-Control-Allow-Origin": "*",
   });
 
-  const config = safeLoadConfig();
-  if (config === null) {
-    sseWrite(res, { type: "error", error: "relay.config.json introuvable ou invalide" });
-    res.end();
-    return;
-  }
+  // Le client (bouton « Arrêter », fenêtre fermée) coupe la connexion → on arrête le pipeline.
+  const abort = new AbortController();
+  res.on("close", () => abort.abort());
 
-  if (body.model !== undefined && body.model.length > 0) {
-    config.decomposer = { ...config.decomposer, model: body.model };
-    for (const tier of ["quick", "build", "deep", "escalate"] as const) {
-      config.routes[tier] = { ...config.routes[tier], model: body.model };
-    }
-  }
-
-  const providerName = body.provider ?? config.decomposer.provider;
   try {
+    const config = safeLoadConfig();
+    if (config === null) throw new ConfigError("relay.config.json introuvable ou invalide");
+    const providerName = body.provider ?? config.decomposer.provider;
+    applyTierModels(config, providerName, body);
+
     const provider = createProvider(providerName, { cwd: ROOT_DIR });
     sseWrite(res, { type: "backend", name: provider.name, billing: provider.billing });
     sseWrite(res, { type: "decomposing" });
@@ -182,12 +217,12 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     });
 
     const router = new Router(config);
-    for await (const event of execute({ pipeline, provider, router })) {
+    sseWrite(res, { type: "routes", routes: config.routes });
+    for await (const event of execute({ pipeline, provider, router, signal: abort.signal })) {
       sseWrite(res, event satisfies PipelineEvent);
     }
   } catch (err) {
-    const message = err instanceof ProviderError || err instanceof Error ? err.message : String(err);
-    sseWrite(res, { type: "error", error: message });
+    sseWrite(res, { type: "error", error: describeError(err) });
   } finally {
     sseWrite(res, { type: "end" });
     res.end();

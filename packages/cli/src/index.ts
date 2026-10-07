@@ -5,8 +5,8 @@
 import {
   CORE_VERSION,
   ConfigError,
-  DecomposerError,
   decompose,
+  describeError,
   execute,
   loadConfig,
   Router,
@@ -127,11 +127,9 @@ async function main(argv: string[]): Promise<number> {
       model: config.decomposer,
     });
   } catch (err) {
-    if (err instanceof DecomposerError) {
-      console.error(`Échec de la décomposition : ${err.message}`);
-      return 1;
-    }
-    throw err;
+    const d = describeError(err);
+    console.error(`\n❌ ${d.title}\n   ${d.detail}${d.hint ? `\n   → ${d.hint}` : ""}`);
+    return 1;
   }
 
   printPlan(pipeline);
