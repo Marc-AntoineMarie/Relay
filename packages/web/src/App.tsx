@@ -8,6 +8,7 @@ import { DockviewReact, themeDark, type DockviewApi, type DockviewReadyEvent } f
 import "dockview-react/dist/styles/dockview.css";
 import { ErrorCard } from "./components";
 import { ConversationPanel } from "./conversation";
+import { TerminalPanel } from "./terminal";
 import {
   DetailPanel,
   JournalPanel,
@@ -31,10 +32,11 @@ const PANELS = {
   files: FilesPanel,
   exec: ExecPanel,
   preview: PreviewPanel,
+  terminal: TerminalPanel,
 };
 
 /** Incrémenter si la liste des panneaux change (invalide les dispositions mémorisées). */
-const LAYOUT_KEY = "relay.layout.v6";
+const LAYOUT_KEY = "relay.layout.v7";
 
 function defaultLayout(api: DockviewApi): void {
   api.clear();
@@ -48,6 +50,7 @@ function defaultLayout(api: DockviewApi): void {
   api.addPanel({ id: "routing", component: "routing", title: "Modèles", position: { referencePanel: "detail", direction: "within" }, inactive: true });
   api.addPanel({ id: "journal", component: "journal", title: "Journal", position: { referencePanel: "pipeline", direction: "below" } });
   api.addPanel({ id: "exec", component: "exec", title: "Exécution", position: { referencePanel: "journal", direction: "within" }, inactive: true });
+  api.addPanel({ id: "terminal", component: "terminal", title: "Terminal", position: { referencePanel: "journal", direction: "within" }, inactive: true });
   api.addPanel({ id: "metrics", component: "metrics", title: "Coûts", position: { referencePanel: "journal", direction: "within" }, inactive: true });
   api.getPanel("composer")?.group.api.setSize({ width: 470 });
   api.getPanel("detail")?.group.api.setSize({ width: 440 });

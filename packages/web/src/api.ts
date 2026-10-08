@@ -147,7 +147,7 @@ export async function* streamAction(action: string, body: unknown, signal?: Abor
   yield* readSse(res.body);
 }
 
-async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator<Record<string, unknown>> {
+export async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator<Record<string, unknown>> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";

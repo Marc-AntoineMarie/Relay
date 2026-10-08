@@ -117,6 +117,7 @@ import {
   tunnelState,
   type RemoteTarget,
 } from "./ollama.js";
+import { closeTerminal, listTerminals, openTerminal, resizeTerminal, shutdownTerminals, streamTerminal, writeTerminal } from "./terminal.js";
 import {
   appendMessage,
   checkImportable,
@@ -1268,6 +1269,31 @@ async function handleWorkspaceOpen(req: IncomingMessage, res: ServerResponse): P
   sendJson(res, 200, { ok: true });
 }
 
+// ── Terminal intégré (phase G) ──────────────────────────────────────────────
+
+async function handleTerminal(url: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (url === "/api/terminal/stream" && req.method === "GET") return streamTerminal(query(req).get("id"), res);
+  if (url === "/api/terminal/list" && req.method === "GET") return sendJson(res, 200, { terminals: listTerminals(runRoot(query(req).get("root"))) });
+  const body = (await readBody(req)) as Record<string, unknown>;
+  switch (url) {
+    case "/api/terminal/open": {
+      const s = openTerminal(runRoot(body["root"]), Number(body["cols"]) || 100, Number(body["rows"]) || 30);
+      return sendJson(res, 200, { id: s.id });
+    }
+    case "/api/terminal/input":
+      writeTerminal(body["id"], body["data"]);
+      return sendJson(res, 200, { ok: true });
+    case "/api/terminal/resize":
+      resizeTerminal(body["id"], body["cols"], body["rows"]);
+      return sendJson(res, 200, { ok: true });
+    case "/api/terminal/close":
+      closeTerminal(body["id"]);
+      return sendJson(res, 200, { ok: true });
+    default:
+      return sendJson(res, 404, { error: "inconnu" });
+  }
+}
+
 // ── Ollama (phase F) ────────────────────────────────────────────────────────
 
 /** Adresse de l'Ollama utilisé : local, ou VPS via le tunnel SSH s'il est ouvert. */
@@ -1434,6 +1460,7 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       if (url === "/api/approve" && req.method === "POST") return await handleApprove(req, res);
       if (url === "/api/workspace/runs" && req.method === "GET") return handleWorkspaceRuns(res);
       if (url.startsWith("/api/ollama/")) return await handleOllama(url, req, res);
+      if (url.startsWith("/api/terminal/")) return await handleTerminal(url, req, res);
       if (url === "/api/projects" && req.method === "GET") return handleProjects(res);
       if (url === "/api/projects/detail" && req.method === "GET") return handleProjectDetail(req, res);
       if (url === "/api/projects/memory" && req.method === "PUT") return await handleProjectMemory(req, res);
@@ -1449,7 +1476,9 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
     } catch (err) {
       // Erreurs des endpoints de l'espace de travail : 400 lisible (chemin refusé, fichier introuvable…).
       const status =
-        url.startsWith("/api/workspace/") || url.startsWith("/api/projects") || url.startsWith("/api/ollama/") || url.startsWith("/ws/") ? 400 : 500;
+        url.startsWith("/api/workspace/") || url.startsWith("/api/projects") || url.startsWith("/api/ollama/") || url.startsWith("/api/terminal/") || url.startsWith("/ws/")
+          ? 400
+          : 500;
       if (!res.headersSent) sendJson(res, status, { error: err instanceof Error ? err.message : String(err) });
       else res.end();
     }
@@ -1478,19 +1507,27 @@ export function startServer(options: { port?: number } = {}): Promise<StartedSer
       /* VPS incomplet : réglages à revoir */
     }
   }
+  // Uniquement sur cette machine (127.0.0.1 et ::1) : rien n'est joignable depuis le réseau local,
+  // même sur un Wi-Fi public — l'API peut lancer des commandes et ouvrir un terminal.
   const server = createServer(handler);
+  const server6 = createServer(handler);
   const port = options.port ?? PORT;
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, () => {
+    server.listen(port, "127.0.0.1", () => {
       server.off("error", reject);
       const addr = server.address();
       const actualPort = typeof addr === "object" && addr !== null ? addr.port : port;
+      // « localhost » peut désigner ::1 : même port en IPv6 local (ignoré si IPv6 est absent).
+      server6.once("error", () => undefined);
+      server6.listen(actualPort, "::1");
       resolve({
         port: actualPort,
         close: () =>
           new Promise<void>((res) => {
             shutdownOllama(); // ni tunnel ni serveur Ollama laissés derrière soi
+            shutdownTerminals();
+            server6.close();
             server.close(() => res());
           }),
       });
@@ -1521,7 +1558,10 @@ function runCli(): void {
     });
 }
 
-process.on("exit", shutdownOllama);
+process.on("exit", () => {
+  shutdownOllama();
+  shutdownTerminals();
+});
 
 process.on("uncaughtException", (err) => {
   console.error(`[relay] exception non gérée : ${err instanceof Error ? err.stack ?? err.message : String(err)}`);

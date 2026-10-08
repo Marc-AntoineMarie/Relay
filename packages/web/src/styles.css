@@ -463,3 +463,10 @@ table.suggest button { padding: 3px 10px; font-size: 12px; }
 .launch-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .launch-bar .run-btn { padding: 5px 14px; }
 .launch-bar code { font-family: var(--mono); }
+
+/* ── Phase G : terminal ──────────────────────────────────────────────────── */
+.term { display: flex; flex-direction: column; height: 100%; }
+.term-cwd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.term-msg { margin: 6px 10px; }
+.term-host { flex: 1; min-height: 0; padding: 4px 0 0 8px; background: #0d121a; }
+.term-host .xterm { height: 100%; }
