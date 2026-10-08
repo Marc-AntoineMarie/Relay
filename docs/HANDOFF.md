@@ -147,6 +147,20 @@ est connecté (abonnement) mais **à ne pas utiliser pour les tests** (désactiv
   `~/.ssh/relay_ed25519`. Les providers lisent `OLLAMA_BASE_URL` (mis à jour par le serveur,
   `modelCache` vidé). Machine de l'utilisateur : Ryzen 5 5500U, 7,1 Go de RAM, iGPU AMD → petits
   modèles seulement. Ne pas lancer le vrai téléchargement (1,4 Go) sans son accord.
+- **NVIDIA (palier gratuit, mesuré le 2026-10-08)** : 80 modèles sur le compte de l'utilisateur ;
+  1re réponse : Nemotron 3.5 Lightning < 1 s, GLM 5.3 Flash ~25 s, DeepSeek V4.1 Flash ~114 s,
+  Kimi K3 > 120 s ; Kimi K2.6 → 404 (non activé pour le compte). Les files d'attente varient :
+  le routeur mesure la latence (`HealthTracker.reportLatency`, chunk `latency`) et pénalise les
+  lents. Ne pas relancer de mesures manuelles sans accord (l'utilisateur a refusé).
+- **Durées** : chaque appel OpenAI-compatible a un délai d'inactivité (90 s ; Ollama 240 s) et une
+  durée max (réglage `maxCallMinutes`, 5 min ; Ollama ×3). Le SDK OpenAI termine un flux annulé
+  **sans erreur** : on teste `control.signal.aborted` après la boucle. Annulation de bout en bout :
+  `CompletionRequest.signal`, `RunTaskContext.request.signal`, `runCommand({signal})`,
+  `ExecutorOptions.onAttempt` (`/api/run/skip`).
+- **Vérification finale** : `Pipeline.launch` (fourni par le plan, repris de la session) lancé par
+  Relay en fin de run (`timeout 8`, 0/124/EOFError = OK) ; échec → événement `launch:check`,
+  nœud d'erreur, correction auto (réglage `autoFix`, une fois). `Task.verifyCommand` pour les
+  corrections : Relay relance la commande après chaque écriture.
 - **Vérification des lancements** : agents → commande exacte, `timeout 5 <cmd>` (124 = en marche,
   succès) ; `Task.mustVerify` pour les corrections.
 - Disposition dockview mémorisée sous `relay.layout.v6` : **incrémenter la clé** si la liste

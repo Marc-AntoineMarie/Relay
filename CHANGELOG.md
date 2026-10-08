@@ -32,6 +32,21 @@ Commits `82f796e` `8864024` + docs · détail :
   ouverte) ; une correction doit être vérifiée.
 - Réponse inutilisable : second essai sur le même modèle avant le repli.
 - Commandes avec `;` entre guillemets refusées à tort en mode Sûr.
+- **Modèle bloqué 15 min** (Kimi K3 via NVIDIA, file d'attente du palier gratuit) : un modèle muet
+  90 s ou plus long que le délai max (5 min, réglable) est abandonné au profit du suivant ; le
+  bouton **Arrêter** coupe vraiment l'appel et la commande en cours ; **« Trop lent ? Passer au
+  modèle suivant »** dans la carte en direct, avec le temps écoulé.
+- **Réponses incohérentes** (charabia, commandes absurdes) détectées → autre modèle, au lieu de
+  demander au même modèle de « corriger ».
+- **Vérification finale par Relay** : le plan donne la commande de lancement ; Relay la lance
+  lui-même en fin de run (8 s) ; si le programme ne démarre pas, l'erreur remonte et une
+  correction part automatiquement (une fois, désactivable) ; **▶ Lancer le projet** dans
+  Exécution. Pendant une correction, Relay relance la commande après chaque modification et
+  montre le vrai résultat au modèle (puis escalade si besoin).
+- **Routage attentif à la latence** : Relay mesure le temps de première réponse de chaque
+  modèle et fait passer les modèles lents (files d'attente) après les réactifs. Sélection
+  NVIDIA revue d'après les modèles réellement disponibles (Nemotron Lightning, GLM 5.3 Flash,
+  Nemotron Ultra ; DeepSeek V4.1 Flash et Kimi K3 en replis).
 
 ### Phase E — projets, conversations, questions, mémoire · 2026-10-08 · validée
 

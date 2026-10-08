@@ -95,3 +95,25 @@ sur une archive `.tar.zst` de test servie en local (le vrai téléchargement de 
 lancé sans accord) ; écran Ollama et VPS ; correction réelle de `No module named 'src'` sur une
 copie du projet (4 replis + second essai avant qu'un modèle gratuit réponde). **Non testé en
 réel** : clés NVIDIA/Cerebras/Mistral/HF/Ollama Cloud (pas de clé), installation réelle, VPS.
+
+## Complément (2026-10-08, matin) — modèle bloqué 15 min, erreur qui revenait
+
+**Constat de l'utilisateur** : Kimi K3 (NVIDIA) « tournait en échec depuis 15 min », puis a
+produit des commandes incohérentes ; son projet `annoy` affichait encore une `TypeError` alors
+qu'un run précédent annonçait « lancement validé ».
+
+**Causes** : aucune limite de durée pendant le flux (le délai ne couvrait que la connexion) ;
+« Arrêter » ne coupait pas l'appel en cours ; réponses dégénérées renvoyées au même modèle ;
+vérification laissée à la discipline du modèle ; files d'attente énormes sur le palier gratuit
+NVIDIA (mesures : Lightning < 1 s, GLM 5.3 Flash ~25 s, DeepSeek V4.1 Flash ~114 s, Kimi K3 > 120 s).
+
+**Correctifs** : délais d'inactivité (90 s) et durée max (5 min, réglable) ; annulation réelle
+(arrêt, « passer au modèle suivant ») ; détection des réponses incohérentes ; vérification finale
+du lancement **par Relay** + correction automatique (une fois) + ▶ Lancer le projet ; pendant une
+correction, Relay relance lui-même la commande après chaque modification ; routage qui mesure la
+latence et évite les modèles lents ; sélection NVIDIA revue. Commit `45c4ee1`.
+
+**Essais réels** (copie du projet) : la vérification finale a bien détecté qu'une correction avait
+réintroduit `No module named 'src'` ; au 3ᵉ essai, tous les fournisseurs gratuits étaient lents ou
+saturés (ce qui a motivé le routage par latence). La convergence de bout en bout reste à confirmer
+par l'utilisateur dans l'app.
