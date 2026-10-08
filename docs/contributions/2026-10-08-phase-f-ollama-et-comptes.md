@@ -1,6 +1,6 @@
 # 2026-10-08 — Phase F : Ollama intégré, comptes gratuits NVIDIA & co, lancements vérifiés
 
-- **Statut** : en attente de validation par l'utilisateur
+- **Statut** : validée (l'utilisateur est passé à la suite)
 - **Commits** : `82f796e` (comptes + correctifs) · `8864024` (Ollama, vérification des corrections) · docs
 
 ## Demande

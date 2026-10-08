@@ -11,7 +11,22 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/), versions 
 
 ## [Non publié] — 0.1.0 en cours
 
-### Phase F — Ollama intégré, comptes gratuits, lancements vérifiés · 2026-10-08 · *en attente de validation*
+### Phase G — terminal intégré · 2026-10-08 · *en attente de validation*
+
+Commit `93ea227` + docs · détail : [contribution](docs/contributions/2026-10-08-phase-g-terminal.md)
+
+#### Ajouté
+
+- Onglet **Terminal** : vrai shell interactif dans le dossier du projet (xterm.js), session
+  conservée côté moteur, sans clés API dans l'environnement ; **Erreur → Relay** (la sélection
+  devient une erreur à corriger) et **→ Conversation**.
+
+#### Sécurité
+
+- Le serveur de Relay n'écoute plus que sur la machine (`127.0.0.1`, `::1`) : il était joignable
+  depuis le réseau local.
+
+### Phase F — Ollama intégré, comptes gratuits, lancements vérifiés · 2026-10-08 · validée
 
 Commits `82f796e` `8864024` + docs · détail :
 [contribution](docs/contributions/2026-10-08-phase-f-ollama-et-comptes.md) · guide [OLLAMA.md](docs/OLLAMA.md)
