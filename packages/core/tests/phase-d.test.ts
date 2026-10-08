@@ -7,9 +7,9 @@ import { execute } from "../src/executor/index.js";
 import { defaultRegistry } from "../src/registry.js";
 import type { RouteCandidate, TaskRouting } from "../src/router/auto.js";
 import type { CompletionRequest, Pipeline, PipelineEvent, Provider, Task } from "../src/types.js";
-import { kindFromStatus, ProviderRequestError, retryDelayMs } from "../src/errors.js";
+import { abortError, kindFromStatus, ProviderRequestError, retryDelayMs } from "../src/errors.js";
 import { checkCommand, launchCommand, runCommand } from "../src/workspace/commands.js";
-import { condense, parseActions } from "../src/workspace/protocol.js";
+import { condense, looksDegenerate, parseActions } from "../src/workspace/protocol.js";
 import { Workspace, WorkspaceError } from "../src/workspace/workspace.js";
 
 let dir: string;
@@ -196,6 +196,18 @@ async function collect(gen: AsyncGenerator<PipelineEvent>): Promise<PipelineEven
 }
 
 describe("réponses inutilisables", () => {
+  it("texte dégénéré (cas réel Kimi K3) reconnu ; réponse normale non", () => {
+    const garbage = [
+      "===RUN: PYTHON, ont le first,\"quel trama-tsunami-dépendante\"]);===",
+      "===RUN: qal_fiker : src/main.py),ejemplo: iceland.js*storyposture: recommander ![](i), Twenty20... CHOICEはん？？？？？???===",
+      "===RUN: src/main.py == !!!!===",
+      "Le résultat ？？？？ !!!!! ????",
+    ].join("\n");
+    expect(looksDegenerate(garbage)).toBe(true);
+    const normal = "J'ai corrigé main.py.\n===FILE: main.py===\nprint('こんにちは')\n===END===\n===RUN: python3 main.py===\n===RUN: timeout 5 python3 src/main.py===\nFait !";
+    expect(looksDegenerate(normal)).toBe(false);
+  });
+
   it("un appel d'outil inventé (gpt-oss sur Groq) déclenche un repli", () => {
     expect(kindFromStatus(undefined, "Tool choice is none, but model called a tool")).toBe("invalid_output");
     expect(kindFromStatus(400, '{"error":{"code":"tool_use_failed"}}')).toBe("invalid_output");
@@ -335,6 +347,64 @@ describe("worker agentique", () => {
     expect(events.some((e) => e.type === "log" && e.entry.title.includes("non vérifiée"))).toBe(true);
     const done = events.find((e) => e.type === "command:done");
     expect(done?.type === "command:done" && [done.command, done.exitCode]).toEqual(["python3 main.py", 0]);
+  });
+
+  it("correction d'un lancement : Relay relance lui-même la commande et montre le résultat au modèle", async () => {
+    const seen: string[] = [];
+    const provider = scripted((req, turn) => {
+      seen.push(req.messages.at(-1)?.content ?? "");
+      return turn === 0
+        ? "===FILE: main.py===\nimport inexistant\n===END===\nCorrigé."
+        : "===FILE: main.py===\nprint('ok')\n===END===\nVraiment corrigé.";
+    });
+    const p = pipeline(dir);
+    Object.assign(p.tasks[0] as Task, { mustVerify: true, verifyCommand: "python3 main.py" });
+    const events = await collect(execute({ pipeline: p, routing: routing(provider, ["m1"]), runTask: agenticRunTask({ workspace: new Workspace(dir), policy: "safe" }) }));
+    expect(seen[1]).toContain("Vérification par Relay : `python3 main.py` → ÉCHEC");
+    expect(seen[1]).toContain("ModuleNotFoundError");
+    const runs = events.filter((e) => e.type === "command:done").map((e) => (e.type === "command:done" ? e.exitCode : -1));
+    expect(runs).toEqual([1, 0]);
+    expect(p.tasks[0]?.output?.data?.["checksFailed"]).toBeUndefined();
+  });
+
+  it("« passer au modèle suivant » : le modèle trop lent est interrompu, le suivant prend la tâche", async () => {
+    const provider: Provider = {
+      ...scripted(() => "Fait."),
+      async *complete(req) {
+        if (req.model === "lent") {
+          await new Promise((_r, reject) => req.signal?.addEventListener("abort", () => reject(abortError(req.signal as AbortSignal, "fake", "lent"))));
+        }
+        yield { type: "text", text: "===FILE: ok.txt===\nok\n===END===\nFait." };
+        yield { type: "usage", usage: { inputTokens: 1, outputTokens: 1, thinkingTokens: 0 } };
+      },
+    };
+    const events = await collect(
+      execute({
+        pipeline: pipeline(dir),
+        routing: routing(provider, ["lent", "rapide"]),
+        runTask: agenticRunTask({ workspace: new Workspace(dir), policy: "safe" }),
+        onAttempt: (a) => a.model === "lent" && setTimeout(a.skip, 50),
+      }),
+    );
+    const done = events.find((e) => e.type === "task:done");
+    expect(done?.type === "task:done" && done.metrics.model).toBe("rapide");
+  });
+
+  it("Arrêter coupe l'appel en cours tout de suite (pas d'attente de la fin du modèle)", async () => {
+    const provider: Provider = {
+      ...scripted(() => ""),
+      async *complete(req) {
+        await new Promise((_r, reject) => req.signal?.addEventListener("abort", () => reject(abortError(req.signal as AbortSignal, "fake", "m1"))));
+        yield { type: "text", text: "jamais" };
+      },
+    };
+    const stop = new AbortController();
+    setTimeout(() => stop.abort(), 50);
+    const started = Date.now();
+    const events = await collect(execute({ pipeline: pipeline(dir), routing: routing(provider, ["m1", "m2"]), runTask: agenticRunTask({ workspace: new Workspace(dir), policy: "safe" }), signal: stop.signal }));
+    expect(Date.now() - started).toBeLessThan(1_000);
+    const last = events.at(-1);
+    expect(last?.type === "pipeline:failed" && last.error).toContain("arrêté");
   });
 
   it("escalade vers un modèle plus fort si les vérifications échouent encore", async () => {

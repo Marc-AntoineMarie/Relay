@@ -48,6 +48,9 @@ Règles :
   → « toujours en marche » = il démarre bien ; une erreur = à corriger.
 - Le programme doit se lancer par une commande simple depuis la racine, sans variable
   d'environnement (ex. « python3 main.py », ou « python3 -m paquet.main »).
+- Piège Python : « python3 dossier/script.py » cherche les imports dans dossier/, pas à la
+  racine. Dans ce cas, importe les modules voisins directement (« from game import … »), ou
+  lance en module depuis la racine (« python3 -m dossier.script ») — et garde la même commande partout.
 - Après tes commandes, tu recevras leur sortie et pourras corriger. Si un test échoue, corrige
   le code plutôt que le test, sauf si le test est manifestement faux.
 - Termine par une phrase de résumé de ce que tu as fait.`;
@@ -101,6 +104,22 @@ export function parseActions(text: string): AgentActions {
     reads: pick(READ),
     incomplete: incomplete.map((b) => b.path),
   };
+}
+
+/**
+ * Réponse dégénérée (le modèle « déraille ») : ponctuation en rafale, alphabets mélangés hors
+ * du code, commandes qui n'en sont pas. Mieux vaut changer de modèle que lui demander de corriger.
+ */
+export function looksDegenerate(text: string, promptHasCjk = false): boolean {
+  const { outside } = scan(text);
+  const prose = outside.join("\n");
+  if ((prose.match(/[?!？！]{4,}/g) ?? []).length >= 3) return true;
+  const cjk = (prose.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g) ?? []).length;
+  const letters = (prose.match(/\p{L}/gu) ?? []).length;
+  if (!promptHasCjk && cjk >= 15 && cjk / Math.max(1, letters) > 0.02) return true;
+  const runs = parseActions(text).runs;
+  const bogus = runs.filter((r) => !/^[A-Za-z0-9_.\/+=-]+$/.test(r.split(/\s+/)[0] ?? "")).length;
+  return bogus >= 2;
 }
 
 /** Remplace les blocs de fichiers par une mention courte (résultat transmis aux tâches suivantes). */

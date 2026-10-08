@@ -15,6 +15,8 @@ const WINDOW_MS: Partial<Record<ErrorKind, number>> = {
   invalid_output: 10 * 60_000,
 };
 
+const LATENCY_TTL_MS = 30 * 60_000;
+
 export class HealthTracker {
   private readonly marks = new Map<string, { kind: ErrorKind; until: number }>();
 
@@ -22,6 +24,21 @@ export class HealthTracker {
   reportFailure(provider: string, model: string, kind: ErrorKind, now = Date.now(), windowMs?: number): void {
     const window = windowMs !== undefined ? windowMs + 5_000 : WINDOW_MS[kind];
     if (window !== undefined) this.marks.set(`${provider}/${model}`, { kind, until: now + window });
+  }
+
+  private readonly latency = new Map<string, { ms: number; at: number }>();
+
+  /** Temps de première réponse observé (moyenne glissante) : les files d'attente changent souvent. */
+  reportLatency(provider: string, model: string, ms: number, now = Date.now()): void {
+    const key = `${provider}/${model}`;
+    const prev = this.latency.get(key);
+    this.latency.set(key, { ms: prev !== undefined && now - prev.at < LATENCY_TTL_MS ? (prev.ms + ms) / 2 : ms, at: now });
+  }
+
+  /** Latence récente (30 min), ou `undefined` si inconnue. */
+  latencyMs(provider: string, model: string, now = Date.now()): number | undefined {
+    const l = this.latency.get(`${provider}/${model}`);
+    return l !== undefined && now - l.at < LATENCY_TTL_MS ? l.ms : undefined;
   }
 
   reportSuccess(provider: string, model: string): void {

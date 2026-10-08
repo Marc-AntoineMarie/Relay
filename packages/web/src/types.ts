@@ -28,6 +28,8 @@ export interface Settings {
   askQuestions: boolean;
   globalMemory: string;
   projectMemory: boolean;
+  maxCallMinutes: number;
+  autoFix: boolean;
 }
 
 export interface MachineInfo {
@@ -100,6 +102,7 @@ export interface ConversationMessage {
   outcome?: "done" | "failed" | "stopped";
   cost?: { billed: number; reference: number; durationMs: number; tokens: number };
   error?: string;
+  launch?: { command: string; ok: boolean };
 }
 
 export type CommandPolicy = "ask" | "safe" | "auto";
@@ -325,6 +328,7 @@ export type ServerEvent =
   | { type: "workspace"; root: string; name?: string; policy: CommandPolicy; round?: number }
   | { type: "questions"; questions: PlanQuestion[]; analysis: string }
   | { type: "memory"; root: string }
+  | { type: "launch:check"; command: string; ok: boolean; exitCode: number | null; output: string }
   | { type: "file:write"; taskId: string; path: string; bytes: number; created: boolean }
   | { type: "command:start"; taskId: string; id: string; command: string }
   | {
@@ -368,6 +372,8 @@ export interface TaskView {
   escalatedFrom?: string;
   /** Nœud « erreur rencontrée en testant » (pas une tâche du moteur). */
   userError?: FixRequest;
+  /** Début de la tentative en cours (modèle actuel), pour afficher depuis quand il travaille. */
+  startedAt?: number;
 }
 
 export type Phase = "idle" | "planning" | "running" | "done" | "failed" | "stopped";

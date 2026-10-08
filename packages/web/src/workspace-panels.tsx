@@ -220,6 +220,22 @@ export function ExecPanel(): React.JSX.Element {
         ))}
       </ol>
       <div className="runner">
+        {r.launchCommand !== null ? (
+          <div className="launch-bar">
+            <button
+              className="run-btn"
+              disabled={r.busy}
+              onClick={() => void r.launchUserCommand(r.launchCommand ?? "")}
+              title="Lance le projet ; s'il plante (au démarrage ou plus tard), l'erreur remonte dans le pipeline"
+            >
+              ▶ Lancer le projet
+            </button>
+            <code className="muted small">{r.launchCommand}</code>
+            <button className="link" onClick={() => setCommand(r.launchCommand ?? "")}>
+              mettre dans le champ (pour une saisie au clavier)
+            </button>
+          </div>
+        ) : null}
         {suggestions.length > 0 ? (
           <div className="suggestions">
             {suggestions.map((s) => (

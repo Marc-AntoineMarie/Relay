@@ -73,7 +73,9 @@ dépendances.
     commande simple depuis la racine du projet sans variable d'environnement (ex.
     « python3 main.py »), et donne-la dans "contracts". La tâche "verify" lance cette
     commande exacte (avec « timeout 5 » si le programme ne s'arrête pas seul), pas
-    seulement les tests.
+    seulement les tests. Mets aussi cette commande seule dans "launch" (Relay la relancera
+    lui-même à la fin pour vérifier) ; laisse "launch" vide pour une page web ou une
+    bibliothèque sans programme à lancer.
 
 11. Rédige "analysis", les descriptions, "spec" et "contracts" dans la langue de la demande.
 

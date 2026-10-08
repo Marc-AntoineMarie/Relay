@@ -11,7 +11,7 @@
  *  - erreurs SDK traduites en `ProviderRequestError` (kind exploitable par le moteur/UI).
  */
 import OpenAI from "openai";
-import { defaultRegistry, kindFromStatus, ModelRegistry, ProviderRequestError, shouldTryAnotherModel } from "@relay/core";
+import { abortError, defaultRegistry, kindFromStatus, ModelRegistry, ProviderRequestError, shouldTryAnotherModel } from "@relay/core";
 import type {
   BillingMode,
   CompletionChunk,
@@ -35,6 +35,10 @@ export interface OpenAICompatibleOptions {
   registry?: ModelRegistry;
   /** Timeout par requête (ms). Défaut 60 s : évite de pendre si un backend gratuit sature. */
   timeoutMs?: number;
+  /** Aucun morceau de réponse (texte ou réflexion) pendant ce délai → abandon. Défaut 90 s. */
+  idleTimeoutMs?: number;
+  /** Durée max d'une réponse complète, même si elle avance. Défaut 5 min. */
+  maxDurationMs?: number;
   /** Modèles de repli, par ordre de préférence. */
   fallbackModels?: string[];
   /** Le backend accepte `reasoning_effort`. */
@@ -64,8 +68,12 @@ export class OpenAICompatibleProvider implements Provider {
   private readonly registry: ModelRegistry;
   private readonly fallbackModels: string[];
   private readonly reasoningEffort: boolean;
+  private readonly idleTimeoutMs: number;
+  private readonly maxDurationMs: number;
 
   constructor(options: OpenAICompatibleOptions) {
+    this.idleTimeoutMs = options.idleTimeoutMs ?? 90_000;
+    this.maxDurationMs = options.maxDurationMs ?? 300_000;
     this.name = options.name;
     this.billing = options.billing;
     this.structuredMode = options.structuredMode ?? "json_object";
@@ -111,13 +119,30 @@ export class OpenAICompatibleProvider implements Provider {
     for (let i = 0; i < candidates.length; i++) {
       const model = candidates[i] as string;
       let emitted = false;
+      // Garde-fous de durée : un modèle muet (90 s) ou interminable (5 min) est abandonné,
+      // et l'annulation (arrêt, « passer au modèle suivant ») coupe vraiment la requête.
+      const control = new AbortController();
+      let why: "idle" | "max" | null = null;
+      const forward = (): void => control.abort(request.signal?.reason);
+      if (request.signal?.aborted === true) forward();
+      request.signal?.addEventListener("abort", forward, { once: true });
+      let idle = setTimeout(() => ((why = "idle"), control.abort()), this.idleTimeoutMs);
+      const max = setTimeout(() => ((why = "max"), control.abort()), this.maxDurationMs);
+      const alive = (): void => {
+        clearTimeout(idle);
+        idle = setTimeout(() => ((why = "idle"), control.abort()), this.idleTimeoutMs);
+      };
       try {
         const params = buildChatParams({ ...request, model }, this.structuredMode, useReasoning);
-        const stream = await this.client.chat.completions.create(params);
+        const stream = await this.client.chat.completions.create(params, { signal: control.signal });
         let usage: CompletionChunk | undefined;
         let stop: StopReason = "end";
+        const sent = Date.now();
+        let firstChunkMs: number | undefined;
 
         for await (const chunk of stream) {
+          alive(); // tout morceau compte, y compris la réflexion (reasoning) qui ne produit pas de texte
+          firstChunkMs ??= Date.now() - sent;
           const choice = chunk.choices[0];
           const text = choice?.delta?.content;
           if (typeof text === "string" && text.length > 0) {
@@ -138,13 +163,28 @@ export class OpenAICompatibleProvider implements Provider {
           }
         }
 
+        // Le SDK termine le flux sans erreur quand on l'annule : sans ce test, une réponse coupée passerait pour finie.
+        if (control.signal.aborted) throw new Error("flux interrompu");
         if (!emitted && model !== request.model) yield { type: "model", model, fallbackFrom: request.model };
+        if (firstChunkMs !== undefined) yield { type: "latency", firstChunkMs };
         if (usage !== undefined) yield usage;
         yield { type: "stop", reason: stop };
         return;
       } catch (err) {
-        const e = toProviderError(err, this.name, model);
-        if (emitted) throw e; // échec en plein flux : on ne mélange pas deux réponses
+        const e =
+          why !== null
+            ? new ProviderRequestError(
+                "timeout",
+                why === "idle"
+                  ? `aucune réponse depuis ${Math.round(this.idleTimeoutMs / 1000)} s`
+                  : `réponse trop longue (plus de ${Math.round(this.maxDurationMs / 60_000)} min)`,
+                this.name,
+                model,
+              )
+            : request.signal?.aborted === true
+              ? abortError(request.signal, this.name, model)
+              : toProviderError(err, this.name, model);
+        if (emitted || e.kind === "aborted" || request.signal?.aborted === true) throw e; // échec en plein flux, ou annulé : on s'arrête là
         if (e.kind === "bad_request" && useReasoning && /reasoning/i.test(e.message)) {
           useReasoning = false; // ce modèle refuse reasoning_effort : même modèle, sans le paramètre
           i--;
@@ -153,6 +193,10 @@ export class OpenAICompatibleProvider implements Provider {
         lastError = e;
         // Changer de modèle n'aide pas pour une clé refusée ou une requête invalide.
         if (!shouldTryAnotherModel(e)) throw e;
+      } finally {
+        clearTimeout(idle);
+        clearTimeout(max);
+        request.signal?.removeEventListener("abort", forward);
       }
     }
 

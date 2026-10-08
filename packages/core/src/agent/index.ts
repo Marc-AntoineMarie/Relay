@@ -7,11 +7,11 @@
  * au bout de `maxIterations` tours (la tâche est alors marquée « vérifications en échec »
  * et l'exécuteur peut l'escalader).
  */
-import { ProviderRequestError } from "../errors.js";
+import { abortError, ProviderRequestError } from "../errors.js";
 import type { RunTask, WorkerResult } from "../executor/index.js";
 import type { CompletionRequest, LogEntry, Message, PipelineEvent, Provider } from "../types.js";
 import { checkCommand, runCommand, type CommandPolicy, type CommandResult } from "../workspace/commands.js";
-import { ACTION_PROTOCOL, condense, parseActions } from "../workspace/protocol.js";
+import { ACTION_PROTOCOL, condense, looksDegenerate, parseActions } from "../workspace/protocol.js";
 import type { Workspace } from "../workspace/workspace.js";
 
 export const AGENT_SYSTEM =
@@ -45,6 +45,11 @@ export function agenticRunTask(opts: AgentOptions): RunTask {
 
   return async (ctx) => {
     const { task, provider, emit } = ctx;
+    const signal = ctx.request.signal;
+    const checkAbort = (): void => {
+      if (signal?.aborted === true) throw abortError(signal, provider.name, ctx.request.model);
+    };
+    const promptHasCjk = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(ctx.request.messages[0]?.content ?? "");
     const ws = opts.workspace;
     const [first, ...rest] = ctx.request.messages;
     const messages: Message[] = [
@@ -75,7 +80,7 @@ export function agenticRunTask(opts: AgentOptions): RunTask {
       }
       emit({ type: "command:start", taskId: task.id, id, command });
       emit(log(task.id, "info", `#${task.id} ▶ ${command}`));
-      const r = await runCommand(command, { cwd: ws.root, timeoutMs: opts.commandTimeoutMs ?? 60_000 });
+      const r = await runCommand(command, { cwd: ws.root, timeoutMs: opts.commandTimeoutMs ?? 60_000, ...(signal !== undefined ? { signal } : {}) });
       emit({ type: "command:done", taskId: task.id, id, ...r });
       emit(
         log(
@@ -89,15 +94,23 @@ export function agenticRunTask(opts: AgentOptions): RunTask {
     };
 
     for (let iter = 0; iter < maxIterations; iter++) {
+      checkAbort();
       const reply = await collect(provider, { ...ctx.request, system: AGENT_SYSTEM, messages }, ctx.onChunk);
+      checkAbort();
       if (iter === 0 && reply.text.trim().length === 0) {
         // Tout parti en réflexion, ou rien : un autre modèle fera mieux.
         throw new ProviderRequestError("invalid_output", "réponse vide (aucun texte produit)", provider.name, ctx.request.model);
+      }
+      if (looksDegenerate(reply.text, promptHasCjk)) {
+        // Le modèle « déraille » (charabia, commandes absurdes) : on change de modèle au lieu de lui faire corriger.
+        emit(log(task.id, "warn", `#${task.id} réponse incohérente de ${ctx.request.model} → autre modèle`, reply.text.slice(0, 2_000)));
+        throw new ProviderRequestError("invalid_output", "réponse incohérente (texte dégénéré)", provider.name, ctx.request.model);
       }
       result.inputTokens += reply.inputTokens;
       result.outputTokens += reply.outputTokens;
       result.thinkingTokens += reply.thinkingTokens;
       if (reply.servedModel !== undefined) result.servedModel = reply.servedModel;
+      if (reply.firstChunkMs !== undefined) result.firstChunkMs ??= reply.firstChunkMs;
       if (reply.stop !== undefined) result.stop = reply.stop;
       lastReply = reply.text;
 
@@ -127,6 +140,7 @@ export function agenticRunTask(opts: AgentOptions): RunTask {
 
       let failed = 0;
       for (const command of actions.runs) {
+        checkAbort();
         const r = await runOne(command);
         // `timeout N <app>` qui renvoie 124 : l'app tournait encore au bout de N s → elle démarre bien.
         const stillRunning = r.exitCode === 124 && /^\s*timeout\s/.test(command);
@@ -160,11 +174,25 @@ export function agenticRunTask(opts: AgentOptions): RunTask {
         if (nudge !== undefined) emit(log(task.id, "warn", `#${task.id} aucune action dans la réponse → relance`, nudge));
       }
       // Tâche qui doit prouver son résultat (correction) : modifier sans relancer ne suffit pas.
-      if (nudge === undefined && task.mustVerify === true && !verifyNudged && written.size > 0 && commands.length === 0 && actions.runs.length === 0) {
+      if (nudge === undefined && task.mustVerify === true && task.verifyCommand === undefined && !verifyNudged && written.size > 0 && commands.length === 0 && actions.runs.length === 0) {
         verifyNudged = true;
         nudge =
           "Tu as modifié des fichiers sans vérifier. Relance maintenant la commande exacte de l'utilisateur avec ===RUN=== (préfixée par « timeout 5 » si le programme ne s'arrête pas seul) et corrige si elle échoue.";
         emit(log(task.id, "warn", `#${task.id} correction non vérifiée → relance de la vérification`));
+      }
+
+      // Correction d'un lancement : Relay relance lui-même la commande après chaque modification
+      // et montre le vrai résultat au modèle (il ne peut pas « oublier » de vérifier).
+      if (task.verifyCommand !== undefined && actions.files.length > 0) {
+        checkAbort();
+        const command = `timeout 8 ${task.verifyCommand}`;
+        const r = await runOne(command);
+        const ok = r.refused === undefined && (r.exitCode === 0 || r.exitCode === 124 || /EOFError|EOF when reading/.test(r.output));
+        commands.push({ command, exitCode: ok ? 0 : r.exitCode });
+        if (!ok) failed++;
+        feedback.push(
+          `### Vérification par Relay : \`${task.verifyCommand}\` → ${ok ? "le programme démarre ✓" : r.refused !== undefined ? `refusée : ${r.refused}` : `ÉCHEC (code ${r.exitCode})`}\n\`\`\`\n${r.output || "(aucune sortie)"}\n\`\`\``,
+        );
       }
 
       checksFailed = failed > 0;
@@ -219,6 +247,7 @@ interface Reply {
   thinkingTokens: number;
   servedModel?: string;
   stop?: WorkerResult["stop"];
+  firstChunkMs?: number;
 }
 
 async function collect(provider: Provider, request: CompletionRequest, onChunk: (t: string) => void): Promise<Reply> {
@@ -232,6 +261,7 @@ async function collect(provider: Provider, request: CompletionRequest, onChunk: 
       reply.outputTokens += chunk.usage.outputTokens;
       reply.thinkingTokens += chunk.usage.thinkingTokens ?? 0;
     } else if (chunk.type === "model") reply.servedModel = chunk.model;
+    else if (chunk.type === "latency") reply.firstChunkMs = chunk.firstChunkMs;
     else if (chunk.type === "stop") reply.stop = chunk.reason;
   }
   return reply;

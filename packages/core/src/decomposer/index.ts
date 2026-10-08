@@ -67,6 +67,8 @@ export const PlanSchema = z.object({
   questions: z.array(PlanQuestionSchema).max(3).optional(),
   /** Contrats partagés : fichiers, signatures, formats, commandes de test. */
   contracts: z.string().optional(),
+  /** Commande exacte pour lancer le programme depuis la racine (vide : rien à lancer, ex. page web). */
+  launch: z.string().optional(),
   tasks: z.array(PlanTaskSchema).max(8),
 });
 
@@ -107,6 +109,8 @@ export interface DecomposeOptions {
   onLog?: (entry: LogEntry) => void;
   /** Le planificateur peut poser des questions de cadrage au lieu de planifier. Défaut : oui. */
   allowQuestions?: boolean;
+  /** Arrêt du pipeline pendant la planification. */
+  signal?: AbortSignal;
 }
 
 /** Décompose un prompt en pipeline (tâches non encore exécutées). */
@@ -149,6 +153,7 @@ ${JSON.stringify(schema)}`,
       messages,
       format: { schema },
       maxTokens,
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     });
     const { text, stop } = reply;
     usage.inputTokens += reply.inputTokens;
@@ -291,6 +296,7 @@ function buildPipeline(opts: DecomposeOptions, plan: Plan, planning: TaskMetrics
     planning,
     ...(contracts ? { contracts } : {}),
     ...(plan.analysis.trim() ? { analysis: plan.analysis.trim() } : {}),
+    ...(plan.launch?.trim() ? { launch: plan.launch.trim() } : {}),
     ...(plan.assumptions?.length ? { assumptions: plan.assumptions } : {}),
     ...(plan.questions?.length ? { questions: plan.questions.map((q) => ({ question: q.question, ...(q.options?.length ? { options: q.options } : {}) })) } : {}),
     created: new Date(),

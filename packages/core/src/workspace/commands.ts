@@ -125,6 +125,8 @@ export interface RunCommandOptions {
   timeoutMs?: number;
   /** Entrée standard (non interactive : envoyée puis fermée). */
   stdin?: string;
+  /** Arrêt du pipeline : la commande est tuée avec ses enfants. */
+  signal?: AbortSignal;
   maxOutput?: number;
 }
 
@@ -208,14 +210,18 @@ export function runCommand(command: string, opts: RunCommandOptions): Promise<Co
     child.stdin.on("error", () => undefined);
     child.stdin.end(opts.stdin ?? "");
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const kill = (): void => {
       try {
         if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
       } catch {
         /* déjà terminé */
       }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      kill();
     }, opts.timeoutMs ?? 60_000);
+    opts.signal?.addEventListener("abort", kill, { once: true });
 
     child.on("error", (e) => {
       clearTimeout(timer);

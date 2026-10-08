@@ -84,6 +84,7 @@ import {
   appendTurn,
   fixPipeline,
   lastContracts,
+  lastLaunch,
   loadSession,
   renumber,
   sessionContext,
@@ -250,6 +251,10 @@ interface RelaySettings {
   globalMemory: string;
   /** Tenir à jour RELAY.md (mémoire du projet) après chaque tour. */
   projectMemory: boolean;
+  /** Durée max d'une réponse de modèle (min) : au-delà, on passe au modèle suivant. */
+  maxCallMinutes: number;
+  /** Si la vérification finale échoue, l'interface lance une correction automatique (une fois). */
+  autoFix: boolean;
   /** Ollama utilisé par Relay : sur cette machine, ou sur un VPS (tunnel SSH). */
   ollamaTarget: "local" | "remote";
   /** VPS pour Ollama (la clé SSH reste sur ta machine). */
@@ -276,6 +281,8 @@ const DEFAULT_SETTINGS: RelaySettings = {
   askQuestions: true,
   globalMemory: "",
   projectMemory: true,
+  maxCallMinutes: 5,
+  autoFix: true,
   ollamaTarget: "local",
   ollamaRemote: null,
 };
@@ -297,6 +304,9 @@ function sanitizeSettings(raw: Partial<RelaySettings>): RelaySettings {
     askQuestions: typeof raw.askQuestions === "boolean" ? raw.askQuestions : DEFAULT_SETTINGS.askQuestions,
     globalMemory: typeof raw.globalMemory === "string" ? raw.globalMemory.slice(0, 4_000) : DEFAULT_SETTINGS.globalMemory,
     projectMemory: typeof raw.projectMemory === "boolean" ? raw.projectMemory : DEFAULT_SETTINGS.projectMemory,
+    maxCallMinutes:
+      typeof raw.maxCallMinutes === "number" && raw.maxCallMinutes >= 1 && raw.maxCallMinutes <= 60 ? raw.maxCallMinutes : DEFAULT_SETTINGS.maxCallMinutes,
+    autoFix: typeof raw.autoFix === "boolean" ? raw.autoFix : DEFAULT_SETTINGS.autoFix,
     ollamaTarget: raw.ollamaTarget === "remote" ? "remote" : "local",
     ollamaRemote:
       typeof raw.ollamaRemote === "object" && raw.ollamaRemote !== null
@@ -617,6 +627,8 @@ interface AgentSetup {
   round: number;
   /** Contrats du dernier tour, repris si le nouveau plan n'en donne pas. */
   contracts?: string;
+  /** Commande de lancement connue (dernier tour), reprise si le nouveau plan n'en donne pas. */
+  launch?: string;
 }
 
 const projects = new ProjectStore(
@@ -676,6 +688,7 @@ async function setupAgent(
     }`,
   });
   const contracts = lastContracts(session);
+  const launch = lastLaunch(session);
   return {
     cwd: workspace.root,
     conventions: [
@@ -699,6 +712,7 @@ async function setupAgent(
     environment,
     round,
     ...(contracts !== undefined ? { contracts } : {}),
+    ...(launch !== undefined ? { launch } : {}),
     runTask: agenticRunTask({
       workspace,
       policy: settings.commandPolicy,
@@ -728,6 +742,18 @@ function askQuestions(pipeline: Pipeline, agent: AgentSetup, res: ServerResponse
   return true;
 }
 
+/** Tentative en cours (un seul run à la fois) : « Passer au modèle suivant » l'interrompt. */
+let currentAttempt: { taskId: string; provider: string; model: string; skip: () => void } | null = null;
+const trackAttempt = (a: typeof currentAttempt): void => {
+  currentAttempt = a;
+};
+
+async function handleRunSkip(res: ServerResponse): Promise<void> {
+  const a = currentAttempt;
+  a?.skip();
+  sendJson(res, a !== null ? 200 : 404, a !== null ? { skipped: true, taskId: a.taskId, model: a.model } : { skipped: false });
+}
+
 /** Modèles capables de tenir la mémoire du projet (petits, rapides, contexte long). */
 type MemoryModel = { provider: Provider; model: ModelAssignment };
 
@@ -744,13 +770,14 @@ function startFix(fix: FixRequest, agent: AgentSetup, res: ServerResponse): Pipe
     title: `Correction directe (sans re-planification) : ${fix.source}`,
     detail: `${fix.note ? `Précision : ${fix.note}\n\n` : ""}${fix.output}`,
   });
-  return fixPipeline(fix, agentContext(agent), agent.contracts);
+  return fixPipeline(fix, agentContext(agent), agent.contracts, agent.launch);
 }
 
 /** Ids du tour, contrats repris, dossier : le pipeline est prêt à s'exécuter dans la session. */
 function attachToSession(pipeline: Pipeline, agent: AgentSetup): void {
   renumber(pipeline, agent.round);
   if (pipeline.contracts === undefined && agent.contracts !== undefined) pipeline.contracts = agent.contracts;
+  if (pipeline.launch === undefined && agent.launch !== undefined) pipeline.launch = agent.launch;
   if (agent.workspace !== undefined) pipeline.workspace = agent.workspace.root;
 }
 
@@ -770,6 +797,7 @@ async function executeAndRecord(
   let outcome: SessionTurn["outcome"] = "stopped";
   let failure: string | undefined;
   let cost: ConversationMessage["cost"];
+  let launchCheck: { command: string; ok: boolean; output: string } | undefined;
   try {
     for await (const event of execute(opts)) {
       sseWrite(res, event satisfies PipelineEvent);
@@ -782,6 +810,10 @@ async function executeAndRecord(
         outcome = opts.signal?.aborted === true ? "stopped" : "failed";
         failure = event.error;
       }
+    }
+    // Vérification finale par Relay lui-même : le programme démarre-t-il vraiment ?
+    if (outcome === "done" && agent.workspace !== undefined && opts.pipeline.launch !== undefined) {
+      launchCheck = await checkLaunch(agent.workspace.root, opts.pipeline.launch, res, opts.signal);
     }
   } finally {
     if (agent.workspace !== undefined) {
@@ -808,6 +840,7 @@ async function executeAndRecord(
         files,
         ...(cost !== undefined ? { cost } : {}),
         ...(failure !== undefined ? { error: failure } : {}),
+        ...(launchCheck !== undefined ? { launch: { command: launchCheck.command, ok: launchCheck.ok } } : {}),
       });
       if (opts.signal?.aborted !== true && loadSettings().projectMemory) {
         const turn = [
@@ -825,6 +858,33 @@ async function executeAndRecord(
       }
     }
   }
+}
+
+/** Ouvre un navigateur ou un fichier : rien à vérifier en ligne de commande. */
+const OPENS_SOMETHING = /^(xdg-open|open|start|firefox|chromium|google-chrome|code)\b/;
+
+/**
+ * Relay lance lui-même la commande du projet (8 s max) : 0 = terminé sans erreur, 124 = encore en
+ * marche (fenêtre, jeu, serveur), « EOFError » = programme qui attend une saisie : tout cela démarre.
+ */
+async function checkLaunch(
+  root: string,
+  command: string,
+  res: ServerResponse,
+  signal?: AbortSignal,
+): Promise<{ command: string; ok: boolean; output: string } | undefined> {
+  if (OPENS_SOMETHING.test(command) || !checkCommand(command, "auto").allowed) return undefined;
+  sseLog(res, { level: "info", category: "tool", title: `Vérification finale par Relay : ${command}` });
+  const r = await runCommand(`timeout 8 ${command}`, { cwd: root, timeoutMs: 15_000, ...(signal !== undefined ? { signal } : {}) });
+  const ok = r.exitCode === 0 || r.exitCode === 124 || /EOFError|EOF when reading/.test(r.output);
+  sseLog(res, {
+    level: ok ? "info" : "error",
+    category: ok ? "tool" : "error",
+    title: ok ? `✓ ${command} démarre correctement` : `✗ ${command} ne démarre pas (code ${r.exitCode ?? "?"})`,
+    detail: r.output || "(aucune sortie)",
+  });
+  sseWrite(res, { type: "launch:check", command, ok, exitCode: r.exitCode, output: r.output });
+  return { command, ok, output: r.output };
 }
 
 /** RELAY.md réécrit par un petit modèle à partir du tour qui vient de se terminer. */
@@ -859,7 +919,7 @@ async function runManual(body: RunBody, prompt: string, res: ServerResponse, sig
   applyTierModels(config, providerName, body);
 
   const settings = loadSettings();
-  const provider = createProvider(providerName, { cwd: ROOT_DIR });
+  const provider = createProvider(providerName, { cwd: ROOT_DIR, maxDurationMs: settings.maxCallMinutes * 60_000 });
   sseWrite(res, { type: "mode", mode: "manual", accounts: [PROVIDER_PRESETS[providerName]?.label ?? providerName] });
   const agent = await setupAgent(settings, prompt, body, res, signal);
   let pipeline: Pipeline;
@@ -874,6 +934,7 @@ async function runManual(body: RunBody, prompt: string, res: ServerResponse, sig
       model: config.decomposer,
       onLog: (entry) => sseWrite(res, { type: "log", entry }),
       allowQuestions: settings.askQuestions && body.kind !== "answer",
+      signal,
     });
     if (askQuestions(pipeline, agent, res)) return;
   }
@@ -883,7 +944,14 @@ async function runManual(body: RunBody, prompt: string, res: ServerResponse, sig
   const synthesis = body.fix === undefined && (body.synthesis ?? settings.synthesis);
   const runTask = agent.runTask !== undefined ? { runTask: agent.runTask } : {};
   const memoryModels: MemoryModel[] = [{ provider, model: config.routes.quick }];
-  await executeAndRecord({ pipeline, provider, router: new Router(config), signal, synthesis, ...runTask }, res, agent, body, prompt, memoryModels);
+  await executeAndRecord(
+    { pipeline, provider, router: new Router(config), signal, synthesis, onAttempt: trackAttempt, ...runTask },
+    res,
+    agent,
+    body,
+    prompt,
+    memoryModels,
+  );
 }
 
 /** Mode auto : le routeur choisit, pour le plan puis pour chaque tâche, parmi tous les comptes. */
@@ -921,7 +989,7 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
   const getProvider = (name: string): Provider => {
     let p = providers.get(name);
     if (p === undefined) {
-      p = createProvider(name, { cwd: ROOT_DIR, fallbacks: false }); // les replis passent par le routeur
+      p = createProvider(name, { cwd: ROOT_DIR, fallbacks: false, maxDurationMs: settings.maxCallMinutes * 60_000 }); // les replis passent par le routeur
       providers.set(name, p);
     }
     return p;
@@ -949,6 +1017,7 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
         model: { provider: c.provider, model: c.model, ...(c.effort !== undefined ? { effort: c.effort } : {}) },
         onLog: (entry) => sseWrite(res, { type: "log", entry }),
         allowQuestions: settings.askQuestions && body.kind !== "answer",
+        signal,
       });
       health.reportSuccess(c.provider, c.model);
       break;
@@ -978,7 +1047,7 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
     .slice(0, 3)
     .map((c) => ({ provider: getProvider(c.provider), model: { provider: c.provider, model: c.model, ...(c.effort !== undefined ? { effort: c.effort } : {}) } }));
   await executeAndRecord(
-    { pipeline, routing: autoRouting(router, getProvider, health), signal, synthesis: withSynthesis, ...runTask },
+    { pipeline, routing: autoRouting(router, getProvider, health), signal, synthesis: withSynthesis, onAttempt: trackAttempt, ...runTask },
     res,
     agent,
     body,
@@ -1015,6 +1084,7 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     sseLog(res, { level: "error", category: "error", title: d.title, detail: d.detail });
     sseWrite(res, { type: "error", error: d });
   } finally {
+    currentAttempt = null;
     sseWrite(res, { type: "end" });
     res.end();
   }
@@ -1046,7 +1116,8 @@ function handleProjects(res: ServerResponse): void {
 
 function handleProjectDetail(req: IncomingMessage, res: ServerResponse): void {
   const root = runRoot(query(req).get("root"));
-  sendJson(res, 200, { root, name: basename(root), messages: loadConversation(root), memory: readMemory(root) });
+  const launch = lastLaunch(loadSession(root));
+  sendJson(res, 200, { root, name: basename(root), messages: loadConversation(root), memory: readMemory(root), ...(launch !== undefined ? { launch } : {}) });
 }
 
 async function handleProjectMemory(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1359,6 +1430,7 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       if (url === "/api/keys/delete" && req.method === "POST") return await handleKeyDelete(req, res);
       if (url === "/api/keys" && req.method === "POST") return await handleKeys(req, res);
       if (url === "/api/run" && req.method === "POST") return await handleRun(req, res);
+      if (url === "/api/run/skip" && req.method === "POST") return await handleRunSkip(res);
       if (url === "/api/approve" && req.method === "POST") return await handleApprove(req, res);
       if (url === "/api/workspace/runs" && req.method === "GET") return handleWorkspaceRuns(res);
       if (url.startsWith("/api/ollama/")) return await handleOllama(url, req, res);

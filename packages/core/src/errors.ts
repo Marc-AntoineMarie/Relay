@@ -13,7 +13,8 @@ export type ErrorKind =
   | "bad_request" // paramètre refusé par le fournisseur
   | "too_large" // requête trop volumineuse pour ce modèle / cette offre (contexte, tokens par minute)
   | "network" // connexion impossible
-  | "invalid_output" // réponse inutilisable (vide, appel d'outil inventé…)
+  | "invalid_output" // réponse inutilisable (vide, appel d'outil inventé, texte incohérent…)
+  | "aborted" // arrêté par l'utilisateur
   | "unknown";
 
 const RETRYABLE: ReadonlySet<ErrorKind> = new Set(["rate_limited", "overloaded", "timeout", "network"]);
@@ -37,6 +38,16 @@ export class ProviderRequestError extends Error {
 /** Un autre modèle peut-il réussir là où celui-ci a échoué ? (repli du routeur) */
 export function shouldTryAnotherModel(error: ProviderRequestError): boolean {
   return error.retryable || error.kind === "model_not_found" || error.kind === "too_large" || error.kind === "invalid_output";
+}
+
+/** Raison d'annulation « passer au modèle suivant » (sinon : arrêt du pipeline). */
+export const SKIP_REASON = "skip";
+
+/** Erreur correspondant à une annulation : passer au modèle suivant (repli) ou arrêt (définitif). */
+export function abortError(signal: AbortSignal, provider: string, model?: string): ProviderRequestError {
+  return signal.reason === SKIP_REASON
+    ? new ProviderRequestError("timeout", "modèle passé à ta demande (trop lent)", provider, model)
+    : new ProviderRequestError("aborted", "arrêté par l'utilisateur", provider, model);
 }
 
 /** Délai annoncé par le fournisseur avant de réessayer (« try again in 17.4s », « retryDelay: "41s" »). */
@@ -100,6 +111,7 @@ const COPY: Record<ErrorKind, { title: string; hint: string }> = {
     title: "Requête trop volumineuse pour ce modèle",
     hint: "Le modèle (ou ton offre gratuite) limite la taille des requêtes : un modèle à plus grand contexte, comme Gemini, convient mieux.",
   },
+  aborted: { title: "Arrêté", hint: "Le pipeline a été arrêté à ta demande." },
   invalid_output: {
     title: "Réponse du modèle inutilisable",
     hint: "Le modèle a renvoyé une réponse vide ou malformée : Relay passe à un autre modèle. Si ça se répète, retire-le du pool (Réglages › Modèles).",

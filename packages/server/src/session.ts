@@ -14,6 +14,9 @@ export interface SessionTurn {
   /** Tâches du tour : « [id] description (statut) ». */
   tasks: string[];
   contracts?: string;
+  /** Commande de lancement du projet (et résultat de la vérification par Relay). */
+  launch?: string;
+  launchOk?: boolean;
   outcome: "done" | "failed" | "stopped";
   /** Compte rendu (synthèse ou résumés des tâches), tronqué. */
   summary?: string;
@@ -54,6 +57,7 @@ export function appendTurn(root: string, turn: SessionTurn): void {
 }
 
 export const lastContracts = (s: Session): string | undefined => [...s.turns].reverse().find((t) => t.contracts)?.contracts;
+export const lastLaunch = (s: Session): string | undefined => [...s.turns].reverse().find((t) => t.launch)?.launch;
 
 const OUTCOME: Record<SessionTurn["outcome"], string> = { done: "terminé", failed: "échoué", stopped: "arrêté" };
 
@@ -102,6 +106,7 @@ export function turnFromPipeline(
     prompt,
     tasks: pipeline.tasks.map((t) => `[${t.id}] ${t.description} (${t.status})`),
     ...(pipeline.contracts !== undefined ? { contracts: pipeline.contracts } : {}),
+    ...(pipeline.launch !== undefined ? { launch: pipeline.launch } : {}),
     outcome,
     ...(summary ? { summary: summary.slice(0, 1_500) } : {}),
     ...(error !== undefined ? { error: error.slice(-2_000) } : {}),
@@ -109,7 +114,7 @@ export function turnFromPipeline(
 }
 
 /** Pipeline d'une correction directe : une tâche d'agent, sans re-planification. */
-export function fixPipeline(fix: FixRequest, context: Pipeline["context"], contracts?: string): Pipeline {
+export function fixPipeline(fix: FixRequest, context: Pipeline["context"], contracts?: string, launch?: string): Pipeline {
   const output = fix.output.length > 4_000 ? `…${fix.output.slice(-4_000)}` : fix.output;
   const note = fix.note?.trim();
   return {
@@ -123,6 +128,7 @@ export function fixPipeline(fix: FixRequest, context: Pipeline["context"], contr
         tier: "build",
         needs: ["code"],
         mustVerify: true,
+        ...(/^«\s*(.+?)\s*»/.exec(fix.source)?.[1] !== undefined ? { verifyCommand: /^«\s*(.+?)\s*»/.exec(fix.source)?.[1] as string } : {}),
         description: `Corriger le projet pour que ${fix.source} fonctionne${note ? ` (${note})` : ""}, puis vérifier.`,
         spec: `L'utilisateur a testé ${fix.source}${
           fix.exitCode !== undefined && fix.exitCode !== null ? ` (code ${fix.exitCode})` : ""
@@ -141,6 +147,8 @@ Objectif : que l'utilisateur puisse réellement utiliser le programme comme il l
     status: "pending",
     created: new Date(),
     ...(contracts !== undefined ? { contracts } : {}),
+    // La commande testée par l'utilisateur devient la vérification de fin de run.
+    ...((/^«\s*(.+?)\s*»/.exec(fix.source)?.[1] ?? launch) !== undefined ? { launch: /^«\s*(.+?)\s*»/.exec(fix.source)?.[1] ?? launch } : {}),
   };
 }
 

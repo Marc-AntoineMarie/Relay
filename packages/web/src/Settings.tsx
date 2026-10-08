@@ -302,6 +302,29 @@ function RoutingSection({ r }: { r: Relay }): React.JSX.Element {
 
       <div className="setting-row">
         <div>
+          <strong>Délai max par réponse de modèle</strong>
+          <p className="muted small">
+            Au-delà, Relay abandonne ce modèle et passe au suivant (le modèle est aussi évité quelques minutes). Un modèle
+            qui ne donne aucun signe de vie pendant 90 s est abandonné plus tôt. Ollama sur CPU a droit à 3 fois plus.
+          </p>
+        </div>
+        <label className="muted small max-calls">
+          <input
+            type="number"
+            min={1}
+            max={60}
+            value={s.maxCallMinutes}
+            onChange={(e) => {
+              const n = Number.parseInt(e.target.value, 10);
+              if (Number.isFinite(n) && n >= 1 && n <= 60) r.updateSettings({ maxCallMinutes: n });
+            }}
+          />{" "}
+          min
+        </label>
+      </div>
+
+      <div className="setting-row">
+        <div>
           <strong>Synthèse finale</strong>
           <p className="muted small">
             À la fin du run, un modèle assemble tous les résultats en un livrable unique (panneau Résultat). Coût compté
@@ -450,6 +473,21 @@ function GeneralSection({ onResetLayout }: { onResetLayout: () => void }): React
           </p>
         </div>
         <Segmented value={s.commandPolicy} disabled={r.busy} onChange={(v) => r.updateSettings({ commandPolicy: v })} options={POLICY_OPTIONS} />
+      </div>
+
+      <div className="setting-row">
+        <div>
+          <strong>Vérification finale et correction automatique</strong>
+          <p className="muted small">
+            À la fin de chaque run, Relay lance lui-même la commande du projet (8 s). S'il ne démarre pas, l'erreur remonte
+            dans le graphe et une correction part automatiquement (une seule fois, jamais en chaîne). Désactivé : l'erreur
+            remonte, tu cliques « Corriger avec Relay » si tu veux.
+          </p>
+        </div>
+        <label className="switch">
+          <input type="checkbox" checked={s.autoFix} onChange={(e) => r.updateSettings({ autoFix: e.target.checked })} />
+          <span>{s.autoFix ? "correction auto" : "manuelle"}</span>
+        </label>
       </div>
 
       <h4>Conversation et mémoire</h4>

@@ -14,6 +14,7 @@ import {
   getPool,
   getSettings,
   getLaunches,
+  skipModel,
   getProject,
   getProjects,
   getState,
@@ -110,6 +111,8 @@ const DEFAULT_SETTINGS: Settings = {
   askQuestions: true,
   globalMemory: "",
   projectMemory: true,
+  maxCallMinutes: 5,
+  autoFix: true,
 };
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -174,6 +177,10 @@ function useRelayState() {
   const busy = phase === "planning" || phase === "running";
   const viewsRef = useRef(views);
   viewsRef.current = views;
+  // Toujours la valeur courante (une correction automatique part après la fin d'un run).
+  const workspaceRef = useRef<string | null>(null);
+  const [launchCommand, setLaunchCommand] = useState<string | null>(null);
+  workspaceRef.current = workspace;
   const selected = useMemo(() => state?.providers.find((p) => p.name === provider), [state, provider]);
   const cfg = settings ?? DEFAULT_SETTINGS;
 
@@ -202,6 +209,7 @@ function useRelayState() {
                 setProjectName((n) => n ?? d.name);
                 setMessages((m) => (m.length === 0 ? d.messages : m));
                 setMemory(d.memory);
+                setLaunchCommand(d.launch ?? null);
                 void listFiles(d.root).then((r) => !cancelled && setFiles((f) => (f.length === 0 ? r.files : f)), () => undefined);
               }
             }
@@ -383,6 +391,7 @@ function useRelayState() {
       setProjectName(d.name);
       setMessages(d.messages);
       setMemory(d.memory);
+      setLaunchCommand(d.launch ?? null);
       setRound(1);
       void refreshFiles(d.root);
     } catch (e: unknown) {
@@ -406,6 +415,7 @@ function useRelayState() {
     setMessages([]);
     setMemory("");
     setFiles([]);
+    setLaunchCommand(null);
     setDraft({ name: "", edited: false, location: "" });
   }
 
@@ -568,10 +578,12 @@ function useRelayState() {
   const pushLog = (entry: LogEntry): void =>
     setLogs((ls) => (ls.length >= MAX_LOGS ? [...ls.slice(-MAX_LOGS + 1), entry] : [...ls, entry]));
 
-  async function run(opts: { fix?: FixRequest; text?: string; kind?: "prompt" | "answer" } = {}): Promise<void> {
+  async function run(opts: { fix?: FixRequest; text?: string; kind?: "prompt" | "answer"; auto?: boolean } = {}): Promise<void> {
     const fix = opts.fix;
+    const workspace = workspaceRef.current;
     // Projet ouvert : la conversation continue (même dossier, graphe, journal) ; sinon nouveau projet.
     const continuing = workspace !== null && cfg.agentic;
+    let launchFailure: FixRequest | null = null;
     const text = fix !== undefined ? `Corriger l'erreur rencontrée en testant ${fix.source}` : (opts.text ?? prompt).trim();
     if (text.length === 0) return;
     const project = {
@@ -658,6 +670,7 @@ function useRelayState() {
           case "task:start":
             patch(ev.taskId, () => ({
               status: "running",
+              startedAt: Date.now(),
               model: ev.model,
               ...(ev.provider ? { provider: ev.provider } : {}),
               ...(ev.reason ? { reason: ev.reason } : {}),
@@ -694,6 +707,13 @@ function useRelayState() {
             setRound(ev.round ?? 1);
             setWorkspace(ev.root);
             setProjectName(ev.name ?? ev.root.split(/[\\/]/).filter(Boolean).at(-1) ?? ev.root);
+            break;
+          case "launch:check":
+            setLaunchCommand(ev.command);
+            if (!ev.ok) {
+              launchFailure = { source: `« ${ev.command} »`, output: ev.output, exitCode: ev.exitCode };
+              raiseError({ ...launchFailure, source: `« ${ev.command} » (vérifié par Relay)` }, `launch:${Date.now()}`);
+            }
             break;
           case "questions":
             setMessages((ms) => [
@@ -768,6 +788,11 @@ function useRelayState() {
       if (runRoot !== null) {
         void refreshFiles(runRoot); // fichiers créés par les commandes aussi (et RELAY.md)
         void reloadProject(runRoot); // conversation et mémoire, version du moteur
+      }
+      // Le programme ne démarre pas : une correction automatique (une seule, jamais en chaîne).
+      const failed = launchFailure;
+      if (failed !== null && cfg.autoFix && opts.auto !== true && !ac.signal.aborted) {
+        window.setTimeout(() => void run({ fix: failed, auto: true }), 400);
       }
       setNow(Date.now()); // fige le chrono sur la durée réelle
       setPhase((p) => (p === "planning" || p === "running" ? "done" : p));
@@ -853,6 +878,9 @@ function useRelayState() {
     importFolder: (path: string) => void importFolder(path),
     saveMemory,
     refreshProjects: () => void refreshProjects(),
+    launchCommand,
+    now,
+    skipModel: () => void skipModel().catch(() => undefined),
     /** Recharge le pool (après un changement côté Ollama, par exemple). */
     refreshPool: () => setPoolTick((t) => t + 1),
     answer: (text: string) => void run({ text, kind: "answer" }),

@@ -11,7 +11,7 @@
  * elle est escaladée une fois vers un modèle plus fort.
  */
 import { referenceCost } from "../catalog.js";
-import { describeError, ProviderRequestError, retryDelayMs, shouldTryAnotherModel } from "../errors.js";
+import { abortError, describeError, ProviderRequestError, retryDelayMs, shouldTryAnotherModel, SKIP_REASON } from "../errors.js";
 import { computePipelineMetrics } from "../metrics/index.js";
 import { buildWorkerPrompt } from "../decomposer/system-prompt.js";
 import { candidateKey, manualRouting, type RouteCandidate, type TaskRouting } from "../router/auto.js";
@@ -54,6 +54,8 @@ export interface WorkerResult {
   summary?: string;
   /** Données transmises dans `TaskIO.data` (fichiers écrits, commandes…). */
   data?: Record<string, unknown>;
+  /** Temps de première réponse du modèle (premier appel de la tâche). */
+  firstChunkMs?: number;
   /** Des vérifications (commandes) échouent encore à la fin de la tâche. */
   checksFailed?: boolean;
 }
@@ -85,6 +87,8 @@ export interface ExecutorOptions {
   signal?: AbortSignal;
   /** Assemble un livrable final à partir de tous les résultats (étape de synthèse). */
   synthesis?: boolean;
+  /** Appelé au début de chaque tentative : `skip()` passe au modèle suivant (modèle trop lent). */
+  onAttempt?: (attempt: { taskId: string; provider: string; model: string; skip: () => void }) => void;
 }
 
 const SYNTHESIS_SYSTEM =
@@ -183,11 +187,11 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i] as RouteCandidate;
       lastTried = c;
-      let outcome = yield* attempt(task, c, prompt, routing, runTask);
-      if (!("result" in outcome) && outcome.error instanceof ProviderRequestError && outcome.error.kind === "invalid_output") {
+      let outcome = yield* attempt(task, c, prompt, routing, runTask, opts);
+      if (!("result" in outcome) && outcome.error instanceof ProviderRequestError && outcome.error.kind === "invalid_output" && !aborted(opts.signal)) {
         // Souvent aléatoire (outil inventé, réponse vide) : un second essai sur le même modèle.
         yield log({ level: "warn", category: "fallback", taskId: task.id, title: `#${task.id} réponse inutilisable de ${c.model} → second essai` });
-        outcome = yield* attempt(task, c, prompt, routing, runTask);
+        outcome = yield* attempt(task, c, prompt, routing, runTask, opts);
       }
       if ("result" in outcome) {
         attempts.push(outcome);
@@ -226,10 +230,19 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
       await sleep(patient.delay + 1_000, opts.signal);
       if (!aborted(opts.signal)) {
         lastTried = patient.c;
-        const outcome = yield* attempt(task, patient.c, prompt, routing, runTask);
+        const outcome = yield* attempt(task, patient.c, prompt, routing, runTask, opts);
         if ("result" in outcome) attempts.push(outcome);
         else failure = outcome.error;
       }
+    }
+
+    // Arrêt demandé pendant la tâche : on s'arrête là, sans attendre ni compter un échec du modèle.
+    if (aborted(opts.signal)) {
+      task.status = "failed";
+      pipeline.status = "failed";
+      yield log({ level: "warn", category: "info", taskId: task.id, title: "Pipeline arrêté par l'utilisateur" });
+      yield { type: "pipeline:failed", pipeline, error: "pipeline arrêté par l'utilisateur" };
+      return;
     }
 
     const firstSuccess = attempts[0];
@@ -267,7 +280,7 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
           detail: `Raison : ${up.reason}`,
         });
         const retryPrompt = `${prompt}\n\n## Tentative précédente (${firstSuccess.model})\nElle n'a pas réussi à faire passer les vérifications. Reprends le travail à partir de l'état actuel du dossier.\n${firstSuccess.result.text.slice(0, 3_000)}`;
-        const outcome = yield* attempt(task, up, retryPrompt, routing, runTask);
+        const outcome = yield* attempt(task, up, retryPrompt, routing, runTask, opts);
         if ("result" in outcome) attempts.push(outcome);
         else yield log({ level: "warn", category: "error", taskId: task.id, title: `#${task.id} escalade impossible : ${describeError(outcome.error).title} — résultat précédent conservé` });
       }
@@ -319,7 +332,7 @@ export async function* execute(opts: ExecutorOptions): AsyncGenerator<PipelineEv
     yield { type: "task:done", taskId: task.id, result: output, metrics };
   }
 
-  const synthesis = opts.synthesis === true ? yield* synthesize(pipeline, routing) : undefined;
+  const synthesis = opts.synthesis === true && !aborted(opts.signal) ? yield* synthesize(pipeline, routing, opts.signal) : undefined;
   const overhead = [pipeline.planning, synthesis].filter((m): m is TaskMetrics => m !== undefined);
   const metrics = computePipelineMetrics({ pipelineId: pipeline.id, taskMetrics, overhead, baselineModel });
   pipeline.metrics = metrics;
@@ -335,6 +348,28 @@ async function* attempt(
   prompt: string,
   routing: TaskRouting,
   runTask: RunTask,
+  opts: Pick<ExecutorOptions, "signal" | "onAttempt">,
+): AsyncGenerator<PipelineEvent, Attempt | { error: unknown }> {
+  // Annulation propre à cette tentative : arrêt du pipeline, ou « passer au modèle suivant ».
+  const control = new AbortController();
+  const onStop = (): void => control.abort(opts.signal?.reason);
+  if (opts.signal?.aborted === true) control.abort(opts.signal.reason);
+  opts.signal?.addEventListener("abort", onStop, { once: true });
+  opts.onAttempt?.({ taskId: task.id, provider: c.provider, model: c.model, skip: () => control.abort(SKIP_REASON) });
+  try {
+    return yield* attemptOnce(task, c, prompt, routing, runTask, control.signal);
+  } finally {
+    opts.signal?.removeEventListener("abort", onStop);
+  }
+}
+
+async function* attemptOnce(
+  task: Task,
+  c: RouteCandidate,
+  prompt: string,
+  routing: TaskRouting,
+  runTask: RunTask,
+  signal: AbortSignal,
 ): AsyncGenerator<PipelineEvent, Attempt | { error: unknown }> {
   const provider = routing.provider(c.provider);
   routing.onUse?.(c);
@@ -356,6 +391,7 @@ async function* attempt(
     system: WORKER_SYSTEM,
     messages: [{ role: "user", content: prompt }],
     maxTokens: DEFAULT_WORKER_MAX_TOKENS,
+    signal,
   };
 
   const started = Date.now();
@@ -364,16 +400,19 @@ async function* attempt(
   try {
     result = yield* streamWhile((emit) => runTask({ task, request, provider, emit, onChunk: (t) => chunks.push(t) }));
   } catch (err) {
-    routing.report?.(c, err instanceof ProviderRequestError ? err : undefined);
-    return { error: err };
+    // Annulé pendant un appel ou une commande : erreur explicite (repli si « passer », arrêt sinon).
+    const e = signal.aborted && !(err instanceof ProviderRequestError && err.kind !== "unknown") ? abortError(signal, c.provider, c.model) : err;
+    routing.report?.(c, e instanceof ProviderRequestError && e.kind !== "aborted" ? e : undefined);
+    return { error: e };
   }
+  if (signal.aborted) return { error: abortError(signal, c.provider, c.model) };
   if (result.text.trim().length === 0) {
     // Réponse vide (tout parti en réflexion…) : inutilisable, un autre modèle prendra le relais.
     const err = new ProviderRequestError("invalid_output", "réponse vide (aucun texte produit)", c.provider, c.model);
     routing.report?.(c, err);
     return { error: err };
   }
-  routing.report?.(c);
+  routing.report?.(c, undefined, result.firstChunkMs !== undefined ? { firstChunkMs: result.firstChunkMs } : undefined);
   for (const text of chunks) yield { type: "task:chunk", taskId: task.id, text };
 
   const model = result.servedModel ?? c.model;
@@ -429,7 +468,7 @@ async function* streamWhile<T>(fn: (emit: (e: PipelineEvent) => void) => Promise
  * Synthèse : un modèle « build » à long contexte assemble tous les résultats en un livrable.
  * En cas d'échec, le pipeline reste réussi (les résultats des tâches sont là).
  */
-async function* synthesize(pipeline: Pipeline, routing: TaskRouting): AsyncGenerator<PipelineEvent, TaskMetrics | undefined> {
+async function* synthesize(pipeline: Pipeline, routing: TaskRouting, signal?: AbortSignal): AsyncGenerator<PipelineEvent, TaskMetrics | undefined> {
   const candidates = routing.candidates({ tier: "build", needs: ["long_context"] }).slice(0, MAX_ROUTE_ATTEMPTS);
   const prompt = buildSynthesisPrompt(pipeline);
 
@@ -448,6 +487,7 @@ async function* synthesize(pipeline: Pipeline, routing: TaskRouting): AsyncGener
           system: SYNTHESIS_SYSTEM,
           messages: [{ role: "user", content: prompt }],
           maxTokens: SYNTHESIS_MAX_TOKENS,
+          ...(signal !== undefined ? { signal } : {}),
         },
         provider,
         onChunk: () => undefined,
@@ -567,6 +607,9 @@ const defaultRunTask: RunTask = async (ctx) => {
         break;
       case "stop":
         result.stop = chunk.reason;
+        break;
+      case "latency":
+        result.firstChunkMs ??= chunk.firstChunkMs;
         break;
       default:
         break;

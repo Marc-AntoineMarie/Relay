@@ -27,6 +27,8 @@ export interface ConversationMessage {
   cost?: { billed: number; reference: number; durationMs: number; tokens: number };
   /** Correction : sortie de l'erreur rencontrée. */
   error?: string;
+  /** Vérification finale du lancement par Relay. */
+  launch?: { command: string; ok: boolean };
 }
 
 export interface ProjectInfo {

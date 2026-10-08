@@ -54,7 +54,8 @@ const RULES: Array<{ match: RegExp; family: string; profile: Profile }> = [
   { match: /nemotron.*ultra/i, family: "Nemotron Ultra", profile: { level: "deep", tags: ["reasoning", "code", "long_context"], inputPerM: 0.6, outputPerM: 1.8, speed: "slow", quality: 0.82 } },
   { match: /nemotron.*(super|49b|70b)/i, family: "Nemotron Super", profile: { level: "build", tags: ["code", "reasoning"], inputPerM: 0.4, outputPerM: 1.2, speed: "normal", quality: 0.72 } },
   { match: /nemotron/i, family: "Nemotron Nano", profile: { level: "quick", tags: ["fast", "code"], inputPerM: 0.06, outputPerM: 0.24, speed: "fast", quality: 0.6 } },
-  { match: /kimi.*k3/i, family: "Kimi K3", profile: { level: "deep", tags: ["reasoning", "code", "long_context"], inputPerM: 1, outputPerM: 3, speed: "normal", quality: 0.86 } },
+  // Très gros modèle qui réfléchit longtemps : lent, surtout sur les paliers gratuits partagés.
+  { match: /kimi.*k3/i, family: "Kimi K3", profile: { level: "deep", tags: ["reasoning", "code", "long_context"], inputPerM: 1, outputPerM: 3, speed: "slow", quality: 0.86 } },
   { match: /deepseek.*v4.*pro/i, family: "DeepSeek V4 Pro", profile: { level: "deep", tags: ["reasoning", "code", "long_context"], inputPerM: 0.6, outputPerM: 2.2, speed: "normal", quality: 0.86 } },
   { match: /deepseek.*v\d.*flash/i, family: "DeepSeek Flash", profile: { level: "build", tags: ["code", "fast", "long_context"], inputPerM: 0.14, outputPerM: 0.28, speed: "fast", quality: 0.74 } },
   { match: /(codestral|devstral)/i, family: "Mistral Code", profile: { level: "build", tags: ["code", "fast"], inputPerM: 0.3, outputPerM: 0.9, speed: "fast", quality: 0.7 } },

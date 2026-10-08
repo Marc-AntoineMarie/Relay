@@ -27,8 +27,10 @@ export interface ProviderPreset {
   fallbackModels?: string[];
   /** Le backend accepte `reasoning_effort` (budget de réflexion). */
   reasoningEffort?: boolean;
-  /** Délai max par requête (ms) ; défaut 60 s. Les modèles locaux sur CPU sont lents. */
+  /** Délai max avant le début de la réponse (ms) ; défaut 60 s. Les modèles locaux sur CPU sont lents. */
   timeoutMs?: number;
+  /** Durée max d'une réponse complète (ms) ; défaut : réglage « délai max par appel ». */
+  maxDurationMs?: number;
   /** Variable d'environnement qui remplace `baseURL` (ex. Ollama sur un VPS, via tunnel SSH). */
   baseURLEnv?: string;
 }
@@ -107,12 +109,15 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     envKey: "NVIDIA_API_KEY",
     needsModelOverride: true,
     keyUrl: "https://build.nvidia.com/settings/api-keys",
+    // Mesuré le 2026-10-08 (palier gratuit) : Nemotron Lightning répond en < 1 s, GLM 5.3 Flash en
+    // ~25 s ; DeepSeek V4.1 Flash (~2 min) et Kimi K3 (> 2 min) ont de longues files d'attente →
+    // gardés en replis ; le routeur mesure ensuite la latence réelle et s'adapte.
     tierModels: {
       quick: "nvidia/nemotron-3.5-lightning-30b-a3b",
-      build: "deepseek-ai/deepseek-v4.1-flash",
-      deep: "moonshotai/kimi-k3",
+      build: "z-ai/glm-5.3-flash",
+      deep: "nvidia/nemotron-3-ultra-550b-a55b",
     },
-    fallbackModels: ["deepseek-ai/deepseek-v4-pro-0813", "nvidia/nemotron-3-ultra-550b-a55b"],
+    fallbackModels: ["nvidia/nemotron-3-super-120b-a12b", "z-ai/glm-5.3", "deepseek-ai/deepseek-v4.1-flash", "moonshotai/kimi-k3"],
     timeoutMs: 120_000,
   },
   cerebras: {
@@ -161,6 +166,7 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     needsModelOverride: true,
     // Sur CPU, une réponse longue prend plusieurs minutes.
     timeoutMs: 600_000,
+    maxDurationMs: 900_000,
   },
 };
 
@@ -173,6 +179,8 @@ export interface CreateProviderOptions {
   env?: NodeJS.ProcessEnv;
   /** Replis internes au provider. Désactivés en mode auto : le routeur gère (sans descendre de niveau). */
   fallbacks?: boolean;
+  /** Durée max d'une réponse (réglage utilisateur) ; les presets lents (Ollama) la multiplient. */
+  maxDurationMs?: number;
 }
 
 /** Instancie le provider nommé. Lève `ProviderError` si inconnu ou clé manquante. */
@@ -200,6 +208,11 @@ export function createProvider(name: string, options: CreateProviderOptions = {}
         baseURL: (preset.baseURLEnv !== undefined ? env[preset.baseURLEnv]?.trim() : undefined) || (preset.baseURL as string),
         billing: preset.billing,
         ...(preset.timeoutMs !== undefined ? { timeoutMs: preset.timeoutMs } : {}),
+        ...(preset.maxDurationMs !== undefined || options.maxDurationMs !== undefined
+          ? { maxDurationMs: preset.maxDurationMs ?? options.maxDurationMs }
+          : {}),
+        // Sur CPU (Ollama), le premier morceau peut tarder (chargement du modèle) : plus de patience.
+        ...(name === "ollama" ? { idleTimeoutMs: 240_000 } : {}),
         ...(apiKey !== undefined ? { apiKey } : {}),
         ...(preset.structuredMode !== undefined ? { structuredMode: preset.structuredMode } : {}),
         ...(preset.fallbackModels !== undefined && options.fallbacks !== false

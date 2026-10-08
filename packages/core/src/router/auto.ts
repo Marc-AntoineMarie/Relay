@@ -55,8 +55,8 @@ export interface TaskRouting {
   provider(name: string): Provider;
   /** Appelé quand un candidat est réellement utilisé. */
   onUse?(candidate: RouteCandidate): void;
-  /** Résultat d'un appel : sans erreur ⇒ succès. */
-  report?(candidate: RouteCandidate, error?: ProviderRequestError): void;
+  /** Résultat d'un appel : sans erreur ⇒ succès ; `firstChunkMs` = temps de première réponse. */
+  report?(candidate: RouteCandidate, error?: ProviderRequestError, info?: { firstChunkMs?: number }): void;
   /** Coût réellement facturé d'un appel (suivi du budget). */
   onCost?(candidate: RouteCandidate, billedCost: number): void;
   /** Modèle plus fort pour réessayer une tâche dont les vérifications échouent (`tried` : "provider/model"). */
@@ -141,6 +141,9 @@ export class AutoRouter {
 
       const health = this.opts.health?.status(entry.provider, entry.model);
       if (health === "model_not_found" || health === "auth") continue;
+      // File d'attente observée récemment (paliers gratuits partagés) : un modèle lent passe après.
+      const latency = this.opts.health?.latencyMs(entry.provider, entry.model);
+      const slowPenalty = latency === undefined ? 0 : latency > 60_000 ? 3 : latency > 25_000 ? 1.5 : latency > 10_000 ? 0.5 : 0;
 
       const missing = needs.filter((n) => !p.tags.includes(n));
       const price = (p.inputPerM + 3 * p.outputPerM) / 4; // pondéré vers la sortie, plus chère
@@ -154,6 +157,7 @@ export class AutoRouter {
         w.quality * p.quality -
         w.level * level +
         (health !== undefined ? (HEALTH_PENALTY[health] ?? 2) : 0) +
+        slowPenalty +
         (degraded ? DEGRADED_PENALTY - 10 * level : 0);
 
       const reason = [
@@ -163,6 +167,7 @@ export class AutoRouter {
         ...needs.map((n) => `${CAPABILITY_LABEL[n]} ${p.tags.includes(n) ? "✓" : "✗"}`),
         p.speed === "fast" ? "rapide" : "",
         health !== undefined ? `récemment ${HEALTH_LABEL[health] ?? health}` : "",
+        latency !== undefined && latency > 10_000 ? `1re réponse ~${Math.round(latency / 1000)} s` : "",
       ]
         .filter((s) => s.length > 0)
         .join(" · ");
@@ -199,10 +204,16 @@ export function autoRouting(
     provider,
     onUse: (c) => router.consume(c.provider),
     onCost: (_c, cost) => router.spend(cost),
-    report: (c, error) =>
-      error !== undefined
-        ? health?.reportFailure(c.provider, c.model, error.kind, Date.now(), retryDelayMs(error))
-        : health?.reportSuccess(c.provider, c.model),
+    report: (c, error, info) => {
+      if (error !== undefined) {
+        health?.reportFailure(c.provider, c.model, error.kind, Date.now(), retryDelayMs(error));
+        // Muet jusqu'au délai : on retient qu'il est lent, même après la fin de la pénalité.
+        if (error.kind === "timeout") health?.reportLatency(c.provider, c.model, 90_000);
+      } else {
+        health?.reportSuccess(c.provider, c.model);
+      }
+      if (info?.firstChunkMs !== undefined) health?.reportLatency(c.provider, c.model, info.firstChunkMs);
+    },
     escalate: (task, tried) =>
       router
         .rank({ tier: NEXT_TIER[task.tier], ...(task.needs !== undefined ? { needs: task.needs } : {}) })

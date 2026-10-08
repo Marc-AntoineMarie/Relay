@@ -454,3 +454,12 @@ table.suggest button { padding: 3px 10px; font-size: 12px; }
 .guide { margin-top: 10px; font-size: 13px; }
 .guide summary { cursor: pointer; color: var(--accent); }
 .guide ol { padding-left: 20px; }
+.live-model { margin: 2px 0 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.skip-btn { padding: 3px 10px; font-size: 12px; border-color: var(--amber); color: var(--amber); background: rgba(229, 165, 59, 0.08); }
+.launch-check { margin: 6px 0 0; font-size: 12px; }
+.launch-check.ok { color: var(--green); }
+.launch-check.err { color: var(--red); }
+.launch-check code { font-family: var(--mono); color: var(--text); }
+.launch-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.launch-bar .run-btn { padding: 5px 14px; }
+.launch-bar code { font-family: var(--mono); }

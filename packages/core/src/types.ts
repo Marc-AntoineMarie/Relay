@@ -72,6 +72,8 @@ export interface Task {
   spec?: string;
   /** La tâche doit prouver son résultat par une commande (ex. correction d'une erreur). */
   mustVerify?: boolean;
+  /** Commande que Relay relance lui-même après chaque modification (correction d'une erreur de lancement). */
+  verifyCommand?: string;
   /** IDs des tâches prérequises. Sans dépendance mutuelle ⇒ parallélisables (v0.2). */
   dependsOn: string[];
   /** Assemblée par l'exécuteur à partir des sorties des dépendances. */
@@ -112,6 +114,8 @@ export interface Pipeline {
   assumptions?: string[];
   /** Questions de cadrage : si présentes, pas de tâches, on attend les réponses. */
   questions?: PlanQuestion[];
+  /** Commande pour lancer le programme depuis la racine (vérifiée par Relay en fin de run). */
+  launch?: string;
   status: PipelineStatus;
   metrics?: PipelineMetrics;
   /** Coût de la planification (comptée dans les totaux, à part des tâches). */
@@ -202,6 +206,8 @@ export interface CompletionRequest {
   maxTokens?: number;
   /** Si présent, force une réponse JSON conforme (structured outputs). */
   format?: StructuredFormat;
+  /** Annulation : arrêt du pipeline, ou « passer au modèle suivant » (raison "skip"). */
+  signal?: AbortSignal;
 }
 
 export interface Usage {
@@ -220,7 +226,9 @@ export type CompletionChunk =
   | { type: "usage"; usage: Usage }
   | { type: "stop"; reason: StopReason }
   /** Requête servie par un modèle de repli (le modèle demandé était saturé ou retiré). */
-  | { type: "model"; model: string; fallbackFrom: string };
+  | { type: "model"; model: string; fallbackFrom: string }
+  /** Temps jusqu'au premier morceau de réponse (file d'attente du fournisseur comprise). */
+  | { type: "latency"; firstChunkMs: number };
 
 /** Modèle choisi pour chaque tier de routage. */
 export type TierModels = Record<RouteTier, string>;

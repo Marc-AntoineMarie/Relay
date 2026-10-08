@@ -49,6 +49,12 @@ describe("questions de cadrage", () => {
     expect(p.questions).toBeUndefined();
   });
 
+  it("le plan donne la commande de lancement (vérifiée par Relay en fin de run)", async () => {
+    const plan = JSON.stringify({ analysis: "ok", launch: "python3 main.py", tasks: [task] });
+    const p = await decompose({ prompt: "x", context: { cwd: "/p" }, provider: replies([plan]), model });
+    expect(p.launch).toBe("python3 main.py");
+  });
+
   it("plan vide sans question : rejeté", async () => {
     const empty = JSON.stringify({ analysis: "?", tasks: [] });
     await expect(decompose({ prompt: "x", context: { cwd: "/p" }, provider: replies([empty]), model })).rejects.toBeInstanceOf(DecomposerError);
@@ -62,5 +68,23 @@ describe("mémoire de projet", () => {
     expect(prompt).toContain("(vide : premier tour)");
     expect(cleanMemory("```markdown\n# calculatrice\n## Objectif\n```")).toBe("# calculatrice\n## Objectif\n");
     expect(clipMemory("x".repeat(10), 4)).toBe("xxxx\n[…mémoire tronquée]");
+  });
+});
+
+describe("routage attentif à la latence", () => {
+  it("un modèle observé lent (file d'attente) passe après un modèle réactif", async () => {
+    const { AutoRouter } = await import("../src/router/auto.js");
+    const { HealthTracker } = await import("../src/router/health.js");
+    const health = new HealthTracker();
+    const pool = [
+      { provider: "nvidia", model: "deepseek-ai/deepseek-v4.1-flash", billing: "free" as const },
+      { provider: "nvidia", model: "z-ai/glm-5.3-flash", billing: "free" as const },
+    ];
+    const router = new AutoRouter(pool, { strategy: "balanced", health });
+    health.reportLatency("nvidia", "deepseek-ai/deepseek-v4.1-flash", 114_000);
+    health.reportLatency("nvidia", "z-ai/glm-5.3-flash", 2_000);
+    const ranked = router.rank({ tier: "build" });
+    expect(ranked[0]?.model).toBe("z-ai/glm-5.3-flash");
+    expect(ranked.find((c) => c.model.includes("deepseek"))?.reason).toContain("1re réponse ~114 s");
   });
 });

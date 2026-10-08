@@ -91,6 +91,8 @@ export class ClaudeCodeProvider implements Provider {
     child.on("error", (err) => {
       spawnError = err;
     });
+    // Arrêt du pipeline ou « passer au modèle suivant » : on coupe le processus claude.
+    request.signal?.addEventListener("abort", () => child.kill("SIGTERM"), { once: true });
 
     let stderr = "";
     child.stderr.setEncoding("utf8");

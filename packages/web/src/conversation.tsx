@@ -340,6 +340,13 @@ function ResultCard({ m }: { m: ConversationMessage }): React.JSX.Element {
           ) : null}
         </>
       ) : null}
+      {m.launch !== undefined ? (
+        <p className={`launch-check ${m.launch.ok ? "ok" : "err"}`}>
+          {m.launch.ok ? "▶ Vérifié par Relay : " : "⚠ Ne démarre pas : "}
+          <code>{m.launch.command}</code>
+          {m.launch.ok ? " démarre correctement" : " — correction automatique lancée si activée"}
+        </p>
+      ) : null}
       {m.error ? <p className="detail-error">{m.error}</p> : null}
     </div>
   );
@@ -358,13 +365,22 @@ function LiveCard(): React.JSX.Element {
         <span className="muted small">{r.elapsed} s</span>
       </div>
       {running !== undefined ? (
-        <p className="live-task">
-          <span className={`tier tier-${running.task.tier}`}>{running.task.tier}</span> #{running.task.id} {running.task.description}
-          <span className="muted small">
-            {" "}
-            — {running.provider ?? "?"} · {running.model ?? "?"}
-          </span>
-        </p>
+        <>
+          <p className="live-task">
+            <span className={`tier tier-${running.task.tier}`}>{running.task.tier}</span> #{running.task.id} {running.task.description}
+          </p>
+          <p className="live-model">
+            <span className="muted small">
+              {running.provider ?? "?"} · {running.model ?? "?"}
+              {running.startedAt !== undefined ? ` · travaille depuis ${Math.max(0, Math.round((r.now - running.startedAt) / 1000))} s` : ""}
+            </span>
+            {running.startedAt !== undefined && r.now - running.startedAt > 45_000 ? (
+              <button className="skip-btn" onClick={r.skipModel} title="Interrompt ce modèle et confie la tâche au suivant de la liste">
+                Trop lent ? Passer au modèle suivant
+              </button>
+            ) : null}
+          </p>
+        </>
       ) : null}
       {lastAction !== undefined ? <p className="muted small live-action">{lastAction.title}</p> : null}
     </div>

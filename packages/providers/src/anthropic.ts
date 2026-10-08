@@ -96,7 +96,7 @@ export class AnthropicProvider implements Provider {
 
     let final: Anthropic.Message;
     try {
-      const stream = this.client.messages.stream(params);
+      const stream = this.client.messages.stream(params, request.signal !== undefined ? { signal: request.signal } : undefined);
       for await (const event of stream) {
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           yield { type: "text", text: event.delta.text };

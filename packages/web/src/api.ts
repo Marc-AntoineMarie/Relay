@@ -106,7 +106,9 @@ export const stopLaunch = (id: string): Promise<{ found: boolean }> => call("/ap
 
 export const getProjects = (): Promise<{ base: string; projects: ProjectInfo[] }> => call("/api/projects");
 
-export const getProject = (root: string): Promise<{ root: string; name: string; messages: ConversationMessage[]; memory: string }> =>
+export const getProject = (
+  root: string,
+): Promise<{ root: string; name: string; messages: ConversationMessage[]; memory: string; launch?: string }> =>
   call(`/api/projects/detail?root=${encodeURIComponent(root)}`);
 
 export const saveProjectMemory = (root: string, content: string): Promise<{ ok: boolean }> =>
@@ -168,6 +170,9 @@ async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator<Record
     }
   }
 }
+
+/** Le modèle en cours est trop lent : on passe au suivant (repli du routeur). */
+export const skipModel = (): Promise<{ skipped: boolean; model?: string }> => call("/api/run/skip", post({}));
 
 export const answerApproval = (key: string, ok: boolean): Promise<{ found: boolean }> =>
   call("/api/approve", post({ key, ok }));

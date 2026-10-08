@@ -27,6 +27,11 @@ describe("session d'un dossier de run", () => {
     expect(p.tasks[0]?.spec).toContain("INTERDIT de masquer l'erreur");
   });
 
+  it("la commande testée devient la vérification de fin de run", () => {
+    expect(fixPipeline({ source: "« python3 src/main.py »", output: "TypeError" }, { cwd: "/tmp" }).launch).toBe("python3 src/main.py");
+    expect(fixPipeline({ source: "l'aperçu de index.html", output: "x" }, { cwd: "/tmp" }, undefined, "python3 app.py").launch).toBe("python3 app.py");
+  });
+
   it("numérote les tâches par tour pour ne pas confondre avec les précédentes", () => {
     const p = fixPipeline({ source: "x", output: "" }, { cwd: "/tmp" });
     p.tasks.push({ ...p.tasks[0]!, id: "2", dependsOn: ["1"] });
