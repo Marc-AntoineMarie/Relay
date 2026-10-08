@@ -244,6 +244,45 @@ conditionnelles. Chaque tâche = un état, chaque résultat = une transition.
 
 ---
 
+## 5 bis. Pilotage d'agents et mémoire (étudiés le 2026-10-08)
+
+### Paperclip — Node.js + React (MIT) — github.com/paperclipai/paperclip
+
+« Open-source orchestration for teams of AI agents » : un plan de contrôle où des agents
+existants (Claude Code, Codex, Gemini CLI, bots HTTP…) sont des « employés » d'une
+« entreprise » — organigramme, objectifs, tickets, budgets, heartbeats, approbations. Stack :
+serveur Node.js, UI React, PostgreSQL embarqué, runner Rust optionnel.
+
+**Ce qu'on prend (interface)** : un **accueil** de vue d'ensemble (projets, dépenses, activité
+récente) ; une page **Coûts** ventilée par projet, fournisseur et modèle, avec **seuils d'alerte
+et arrêts** (→ phase H) ; un **fil d'activité** global et durable (actions, coûts, approbations) ;
+une **file d'approbations** (notre mode Prudent, à généraliser) ; une **galerie d'artefacts**
+(fichiers produits, aperçu, commentaires) ; la **recherche** dans tous les projets ; une UI qui
+marche **sur mobile** ; plus tard les **routines** (runs planifiés) et un studio de **skills**.
+
+**Ce qu'on ne prend pas** : la métaphore « entreprise / organigramme » (Relay part d'une demande,
+pas d'une équipe permanente) et l'infrastructure lourde (PostgreSQL, runner Rust). Piste
+possible : Relay comme « agent » branché dans Paperclip (adaptateur HTTP), plus tard.
+
+### Hindsight — mémoire d'agents (MIT) — github.com/vectorize-io/hindsight
+
+Mémoire qui « apprend avec le temps » : **banques** isolées (par utilisateur, agent ou projet) ;
+**retain** (un LLM extrait faits, entités, relations, dates), **recall** (recherche sémantique,
+mots-clés, graphe et temporelle en parallèle, puis reranking), **reflect** (raisonnement sur les
+souvenirs, observations et « mental models » consolidés). Serveur Python + PostgreSQL/pgvector
+(ou base embarquée), clients TypeScript/Python, endpoint MCP par banque, 25+ fournisseurs dont
+Ollama. Annonce l'état de l'art sur LongMemEval (janvier 2026, d'après le README).
+
+**Ce qu'on prend (concepts, dans notre mémoire légère)** : une banque par projet + une banque
+« toi » ; des **expériences** (« erreur X → corrigée par Y », « tkinter absent ici », « tel modèle
+est lent ») retenues après chaque tour et **rappelées** quand une situation semblable revient ;
+la consolidation périodique (déjà faite par `RELAY.md`).
+
+**Intégration réelle : optionnelle, plus tard** — un backend « Hindsight » derrière notre
+interface de mémoire, pour qui le fait tourner (Docker, ou sur le même VPS qu'Ollama). Pas par
+défaut : un service Python + PostgreSQL + embeddings + reranker et un appel LLM par
+mémorisation pèsent trop pour une machine de 7 Go déjà juste et des quotas gratuits saturés.
+
 ## 6. Observabilité et métriques (ce que l'utilisateur voit)
 
 ### Laminar — Rust/TypeScript

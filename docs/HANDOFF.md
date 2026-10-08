@@ -27,6 +27,8 @@ dossier par run, lance des commandes (tests) et corrige ; l'utilisateur voit et 
 | H | **métriques sérieuses** : chaque chiffre justifié (formule, source et date des prix), Réglages › Métriques (baseline, table de prix, orchestration incluse ou non), historique (SQLite, v0.2), quotas lus chez les fournisseurs (en-têtes `x-ratelimit-*`, soldes OpenRouter/DeepSeek, compteurs locaux Gemini) | à faire |
 | I | **activité visible** : animation du graphe et des décisions du routeur, liée au journal (promise ; une partie est déjà dans la carte « en direct » de la Conversation) | à faire |
 | plus tard | **skills** (recettes réutilisables, façon Claude Code) | idée |
+| proposé | **mémoire par expériences** (inspirée de Hindsight) : retenir les erreurs corrigées et leurs causes, les contraintes de la machine, la lenteur des modèles ; les rappeler quand c'est pertinent ; backend Hindsight optionnel plus tard | voir `docs/INSPIRATIONS.md` |
+| proposé | **accueil et dashboard inspirés de Paperclip** : vue d'ensemble (projets, dépenses, activité), page Coûts avec alertes, fil d'activité, galerie d'artefacts, recherche, mobile | à fusionner avec H (métriques) et I (activité) |
 
 Ordre recommandé à l'utilisateur : E → F → G → H → I (il peut le changer).
 
