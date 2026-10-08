@@ -448,6 +448,14 @@ export interface TaskView {
   userError?: FixRequest;
   /** Début de la tentative en cours (modèle actuel), pour afficher depuis quand il travaille. */
   startedAt?: number;
+  /** Ce que fait la tâche en ce moment (animation du graphe). */
+  activity?: { kind: "waiting" | "writing" | "file" | "command" | "check"; text: string; at: number };
+  /** Caractères reçus du modèle pour la tentative en cours. */
+  chars?: number;
+  /** Modèles essayés pour cette tâche, dans l'ordre (premier choix, replis, escalade). */
+  tries?: Array<{ provider: string; model: string; state: "running" | "ok" | "failed"; why?: string }>;
+  /** Fin de la tâche (pour un bref effet visuel). */
+  endedAt?: number;
 }
 
 export type Phase = "idle" | "planning" | "running" | "done" | "failed" | "stopped";

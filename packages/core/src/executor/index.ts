@@ -396,10 +396,24 @@ async function* attemptOnce(
   };
 
   const started = Date.now();
-  const chunks: string[] = [];
   let result: WorkerResult;
   try {
-    result = yield* streamWhile((emit) => runTask({ task, request, provider, emit, onChunk: (t) => chunks.push(t) }));
+    result = yield* streamWhile((emit) => {
+      // Le texte du modèle part en direct, par paquets (toutes les 250 ms) : l'interface voit qu'il écrit.
+      let pending = "";
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const flush = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
+        timer = undefined;
+        if (pending) emit({ type: "task:chunk", taskId: task.id, text: pending });
+        pending = "";
+      };
+      const onChunk = (t: string): void => {
+        pending += t;
+        timer ??= setTimeout(flush, 250);
+      };
+      return runTask({ task, request, provider, emit, onChunk }).finally(flush);
+    });
   } catch (err) {
     // Annulé pendant un appel ou une commande : erreur explicite (repli si « passer », arrêt sinon).
     const e = signal.aborted && !(err instanceof ProviderRequestError && err.kind !== "unknown") ? abortError(signal, c.provider, c.model) : err;
@@ -414,7 +428,6 @@ async function* attemptOnce(
     return { error: err };
   }
   routing.report?.(c, undefined, result.firstChunkMs !== undefined ? { firstChunkMs: result.firstChunkMs } : undefined);
-  for (const text of chunks) yield { type: "task:chunk", taskId: task.id, text };
 
   const model = result.servedModel ?? c.model;
   const refCost = referenceCost(model, result.inputTokens, result.outputTokens);

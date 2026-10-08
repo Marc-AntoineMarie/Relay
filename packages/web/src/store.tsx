@@ -155,6 +155,9 @@ function useRelayState() {
   const [runInfo, setRunInfo] = useState<{ mode: Mode; accounts: string[]; strategy?: Strategy } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
   const [dashboardOpen, setDashboardOpen] = useState(false);
+  // Lien graphe ↔ journal : tâche filtrée dans le journal (null = tout), et demande d'affichage.
+  const [journalTask, setJournalTask] = useState<string | null>(null);
+  const [journalTick, setJournalTick] = useState(0);
   // Incrémenté à la fin de chaque run : le tableau de bord et l'alerte budget se rafraîchissent.
   const [usageTick, setUsageTick] = useState(0);
   // Phase D : dossier de travail du run, fichiers, commandes, validations.
@@ -659,6 +662,11 @@ function useRelayState() {
             break;
           case "log":
             pushLog(ev.entry);
+            // Repli : on note pourquoi le modèle en cours a été abandonné.
+            if (ev.entry.category === "fallback" && ev.entry.taskId !== undefined) {
+              const why = ev.entry.title.replace(/^#\S+\s+/, "").replace(/\s*→.*$/, "");
+              patch(ev.entry.taskId, (v) => ({ tries: (v.tries ?? []).map((t) => (t.state === "running" ? { ...t, why } : t)) }));
+            }
             break;
           case "pipeline:plan": {
             setPhase("running");
@@ -672,20 +680,30 @@ function useRelayState() {
             break;
           }
           case "task:route":
-            patch(ev.taskId, () => ({ provider: ev.provider, model: ev.model, reason: ev.reason, alternatives: ev.alternatives }));
+            patch(ev.taskId, () => ({ provider: ev.provider, model: ev.model, reason: ev.reason, alternatives: ev.alternatives, tries: [] }));
             break;
           case "task:start":
-            patch(ev.taskId, () => ({
+            patch(ev.taskId, (v) => ({
               status: "running",
               startedAt: Date.now(),
               model: ev.model,
+              output: "", // nouvelle tentative : on repart de zéro
+              chars: 0,
+              activity: { kind: "waiting", text: `attend la 1re réponse de ${ev.model}`, at: Date.now() },
+              tries: [
+                ...(v.tries ?? []).map((t) => (t.state === "running" ? { ...t, state: "failed" as const, why: t.why ?? "repli" } : t)),
+                { provider: ev.provider ?? v.provider ?? "?", model: ev.model, state: "running" as const },
+              ],
               ...(ev.provider ? { provider: ev.provider } : {}),
               ...(ev.reason ? { reason: ev.reason } : {}),
             }));
             setSelectedId(ev.taskId);
             break;
           case "task:chunk":
-            patch(ev.taskId, (v) => ({ output: v.output + ev.text }));
+            patch(ev.taskId, (v) => {
+              const chars = (v.chars ?? 0) + ev.text.length;
+              return { output: v.output + ev.text, chars, activity: { kind: "writing", text: `rédige… ${chars.toLocaleString("fr-FR")} caractères`, at: Date.now() } };
+            });
             break;
           case "task:done":
             patch(ev.taskId, (v) => ({
@@ -700,14 +718,26 @@ function useRelayState() {
               ...(ev.result.data?.files !== undefined ? { files: ev.result.data.files } : {}),
               ...(ev.result.data?.commands !== undefined ? { commands: ev.result.data.commands } : {}),
               ...(ev.result.data?.checksFailed === true ? { checksFailed: true } : {}),
+              endedAt: Date.now(),
+              tries: (v.tries ?? []).map((t) => (t.state === "running" ? { ...t, state: "ok" as const } : t)),
             }));
+            patch(ev.taskId, () => ({ activity: undefined }));
             break;
           case "task:failed":
-            patch(ev.taskId, () => ({ status: "failed", error: ev.error }));
+            patch(ev.taskId, (v) => ({
+              status: "failed",
+              error: ev.error,
+              endedAt: Date.now(),
+              tries: (v.tries ?? []).map((t) => (t.state === "running" ? { ...t, state: "failed" as const, why: t.why ?? ev.description?.title ?? "échec" } : t)),
+            }));
+            patch(ev.taskId, () => ({ activity: undefined }));
             setSelectedId(ev.taskId);
             break;
           case "task:escalate":
-            patch(ev.taskId, () => ({ escalatedFrom: ev.from.model }));
+            patch(ev.taskId, (v) => ({
+              escalatedFrom: ev.from.model,
+              tries: (v.tries ?? []).map((t) => (t.state === "running" ? { ...t, state: "failed" as const, why: "vérifications en échec → escalade" } : t)),
+            }));
             break;
           case "workspace":
             runRoot = ev.root;
@@ -733,10 +763,12 @@ function useRelayState() {
               [...fs.filter((f) => f.path !== ev.path), { path: ev.path, size: ev.bytes }].sort((a, b) => a.path.localeCompare(b.path)),
             );
             setLastWrite({ path: ev.path, at: Date.now() });
+            patch(ev.taskId, () => ({ activity: { kind: "file", text: `${ev.created ? "crée" : "modifie"} ${ev.path}`, at: Date.now() } }));
             setPreview((p) => (p === null ? p : { ...p, nonce: Date.now() })); // l'aperçu suit les corrections
             break;
           case "command:start":
             upsertCommand(ev.id, { taskId: ev.taskId, command: ev.command, by: "agent", running: true });
+            patch(ev.taskId, () => ({ activity: { kind: "command", text: `▶ ${ev.command}`, at: Date.now() } }));
             break;
           case "command:done":
             upsertCommand(ev.id, {
@@ -750,6 +782,9 @@ function useRelayState() {
               timedOut: ev.timedOut,
               ...(ev.refused !== undefined ? { refused: ev.refused } : {}),
             });
+            patch(ev.taskId, () => ({
+              activity: { kind: "check", text: `${ev.exitCode === 0 || ev.exitCode === 124 ? "✓" : "✗"} ${ev.command}`, at: Date.now() },
+            }));
             break;
           case "approval:request":
             setApprovals((as) => [...as, { key: ev.key, taskId: ev.taskId, command: ev.command }]);
@@ -791,6 +826,14 @@ function useRelayState() {
     } finally {
       abortRef.current = null;
       setApprovals([]);
+      // Flux terminé (arrêt, coupure) : plus aucune tâche n'est « en cours ».
+      setViews((vs) =>
+        vs.map((v) =>
+          v.status === "running"
+            ? { ...v, status: "failed" as const, activity: undefined, endedAt: Date.now(), error: v.error ?? "arrêtée", tries: (v.tries ?? []).map((t) => (t.state === "running" ? { ...t, state: "failed" as const, why: t.why ?? "arrêté" } : t)) }
+            : v,
+        ),
+      );
       void refreshProjects();
       setUsageTick((t) => t + 1);
       if (runRoot !== null) {
@@ -861,6 +904,14 @@ function useRelayState() {
       setSettingsOpen(section);
     },
     dashboardOpen,
+    journalTask,
+    setJournalTask,
+    journalTick,
+    /** Ouvre le journal filtré sur une tâche. */
+    focusJournal: (taskId: string | null) => {
+      setJournalTask(taskId);
+      setJournalTick((t) => t + 1);
+    },
     openDashboard: () => setDashboardOpen(true),
     closeDashboard: () => setDashboardOpen(false),
     usageTick,

@@ -98,6 +98,11 @@ function Shell(): React.JSX.Element {
     if (r.previewTick > 0) apiRef.current?.getPanel("preview")?.api.setActive();
   }, [r.previewTick]);
 
+  // Journal demandé (graphe, routeur, détail) : l'onglet Journal passe devant, filtré.
+  useEffect(() => {
+    if (r.journalTick > 0) apiRef.current?.getPanel("journal")?.api.setActive();
+  }, [r.journalTick]);
+
   // Erreur remontée en testant : le détail (avec « Corriger avec Relay ») passe devant.
   useEffect(() => {
     if (r.errorTick > 0) apiRef.current?.getPanel("detail")?.api.setActive();

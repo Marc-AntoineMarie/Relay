@@ -538,3 +538,60 @@ a.ghost-btn { text-decoration: none; display: inline-flex; align-items: center; 
 .budget-fields { display: flex; gap: 12px; align-items: center; }
 .budget-fields input { width: 80px; margin: 0 4px; }
 .data-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* ── Phase I : activité visible ──────────────────────────────────────────── */
+.node-desc { max-height: 32px; }
+/* Tâche en cours : bordure dégradée qui circule + halo qui respire. */
+.node-running {
+  border-color: transparent;
+  background: linear-gradient(var(--panel), var(--panel)) padding-box, linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent)) border-box;
+  background-size: 100% 100%, 200% 100%;
+  animation: border-flow 2.2s linear infinite, halo 1.8s ease-in-out infinite;
+}
+@keyframes border-flow { to { background-position: 0 0, 200% 0; } }
+@keyframes halo { 0%, 100% { box-shadow: 0 0 0 0 rgba(91, 140, 255, 0.35); } 50% { box-shadow: 0 0 0 6px rgba(91, 140, 255, 0); } }
+.node-just-done { animation: done-flash 1.4s ease-out 1; }
+@keyframes done-flash { 0% { box-shadow: 0 0 0 0 rgba(53, 195, 137, 0.7); } 100% { box-shadow: 0 0 0 12px rgba(53, 195, 137, 0); } }
+.node-just-failed { animation: shake 0.45s ease-in-out 1; }
+@keyframes shake { 20%, 60% { transform: translateX(-3px); } 40%, 80% { transform: translateX(3px); } }
+.node-activity { display: flex; align-items: center; gap: 5px; min-height: 16px; font-size: 11px; overflow: hidden; }
+.node-activity .act-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-activity .act-time { flex: none; color: var(--muted); font-family: var(--mono); font-size: 10px; }
+.act-waiting .act-icon { animation: pulse 1.2s infinite; }
+.act-writing .act-text::after { content: "▍"; margin-left: 2px; animation: blink 0.9s steps(1) infinite; }
+.act-command .act-text, .act-check .act-text, .act-file .act-text { font-family: var(--mono); font-size: 10.5px; }
+.act-file { color: var(--green); }
+@keyframes blink { 50% { opacity: 0; } }
+.node-summary { color: var(--muted); }
+.node-summary:empty { display: none; }
+.node-tries { font-size: 10px; color: var(--amber); border: 1px solid rgba(229, 165, 59, 0.45); border-radius: 99px; padding: 0 6px; }
+.edge-done { stroke: rgba(53, 195, 137, 0.55); }
+
+/* Décisions du routeur en direct */
+.decisions.live { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.dec { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+.dec:hover { border-color: var(--border-strong); }
+.dec-selected { border-color: var(--accent); }
+.dec-running { border-color: rgba(91, 140, 255, 0.6); background: rgba(91, 140, 255, 0.06); }
+.dec-head { display: flex; align-items: center; gap: 6px; font-size: 12.5px; }
+.dec-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dec-chain { display: flex; flex-wrap: wrap; gap: 4px; }
+.try { font: 10.5px var(--mono); padding: 1px 7px; border-radius: 99px; border: 1px solid var(--border); white-space: nowrap; }
+.try-running { border-color: var(--accent); color: #fff; animation: pulse 1.4s infinite; }
+.try-ok { border-color: rgba(53, 195, 137, 0.6); color: var(--green); }
+.try-failed { border-color: rgba(255, 92, 114, 0.45); color: var(--red); text-decoration: line-through; text-decoration-thickness: 1px; }
+.try-planned { color: var(--muted); border-style: dashed; }
+.dec-live { font-size: 11.5px; color: #cdd8f0; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dec-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Lien journal ↔ graphe */
+.log-task { flex: none; font: 10.5px var(--mono); color: var(--accent); border: 1px solid rgba(91, 140, 255, 0.4); border-radius: 99px; padding: 0 6px; cursor: pointer; }
+.log-task:hover { background: rgba(91, 140, 255, 0.15); }
+.log-selected { box-shadow: inset 3px 0 0 var(--accent); background: rgba(91, 140, 255, 0.05); }
+.journal-link { align-self: flex-start; }
+
+@media (prefers-reduced-motion: reduce) {
+  .node-running, .node-just-done, .node-just-failed, .edge-active, .dot-running, .try-running, .act-waiting .act-icon, .act-writing .act-text::after { animation: none !important; }
+}
+.decisions.live > li.dec { display: flex; flex-direction: column; align-items: stretch; grid-template-columns: none; background: none; }
+.decisions.live > li.dec-running { background: rgba(91, 140, 255, 0.06); }

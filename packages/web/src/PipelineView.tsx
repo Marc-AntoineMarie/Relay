@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TaskView } from "./types";
 
 const NODE_W = 200;
-const NODE_H = 76;
+const NODE_H = 94;
 const COL_STRIDE = 250;
 const ROW_STRIDE = 94;
 const MIN_SCALE = 0.25;
@@ -44,9 +44,13 @@ interface DagProps {
   views: TaskView[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /** Horloge (tic toutes les 500 ms pendant un run) : chronos et effets de fin. */
+  now?: number;
 }
 
-function PipelineView({ views, selectedId, onSelect, layout }: DagProps & { layout: DagLayout }): React.JSX.Element {
+const ACT_ICON: Record<NonNullable<TaskView["activity"]>["kind"], string> = { waiting: "⏳", writing: "✍", file: "📄", command: "▶", check: "✔" };
+
+function PipelineView({ views, selectedId, onSelect, layout, now = Date.now() }: DagProps & { layout: DagLayout }): React.JSX.Element {
   const { pos, width, height } = layout;
   return (
     <div className="dag" style={{ width, height }}>
@@ -70,7 +74,7 @@ function PipelineView({ views, selectedId, onSelect, layout }: DagProps & { layo
               <path
                 key={`${depId}-${v.task.id}`}
                 d={`M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2 - 6},${y2}`}
-                className={`edge ${v.status === "running" ? "edge-active" : ""}`}
+                className={`edge ${v.status === "running" ? "edge-active" : v.status === "done" ? "edge-done" : ""}`}
                 markerEnd="url(#arrow)"
               />
             );
@@ -81,12 +85,15 @@ function PipelineView({ views, selectedId, onSelect, layout }: DagProps & { layo
         const p = pos.get(v.task.id);
         if (p === undefined) return null;
         const m = v.metrics;
+        const justEnded = v.endedAt !== undefined && now - v.endedAt < 1_600;
+        const tries = v.tries ?? [];
+        const elapsed = v.startedAt !== undefined ? Math.max(0, Math.round((now - v.startedAt) / 1000)) : 0;
         return (
           <div
             key={v.task.id}
             role="button"
             tabIndex={0}
-            className={`node node-${v.status} ${selectedId === v.task.id ? "node-selected" : ""}`}
+            className={`node node-${v.status} ${selectedId === v.task.id ? "node-selected" : ""} ${justEnded ? `node-just-${v.status}` : ""}`}
             style={{ left: p.x, top: p.y, width: NODE_W, height: NODE_H }}
             onClick={() => onSelect(v.task.id)}
             onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && onSelect(v.task.id)}
@@ -99,9 +106,23 @@ function PipelineView({ views, selectedId, onSelect, layout }: DagProps & { layo
                 <span className={`tier tier-${v.task.tier}`}>{v.task.tier}</span>
               )}
               <span className="node-type">{v.task.type}</span>
+              {tries.length > 1 ? (
+                <span className="node-tries" title={tries.map((t) => `${t.provider} · ${t.model}${t.why ? ` — ${t.why}` : ""}`).join("\n")}>
+                  ↺ {tries.length}
+                </span>
+              ) : null}
               <span className={`dot dot-${v.status}`} />
             </div>
             <div className="node-desc">{v.task.description}</div>
+            {v.status === "running" && v.activity !== undefined ? (
+              <div className={`node-activity act-${v.activity.kind}`}>
+                <span className="act-icon">{ACT_ICON[v.activity.kind]}</span>
+                <span className="act-text">{v.activity.text}</span>
+                <span className="act-time">{elapsed} s</span>
+              </div>
+            ) : (
+              <div className="node-activity node-summary">{v.status === "done" ? (v.summary ?? "") : v.status === "failed" ? (v.error ?? "") : ""}</div>
+            )}
             <div className="node-foot">
               <span className="node-model" title={v.provider !== undefined ? `${v.provider} · ${v.model ?? ""}` : undefined}>
                 {v.provider !== undefined ? `${v.provider} · ` : ""}

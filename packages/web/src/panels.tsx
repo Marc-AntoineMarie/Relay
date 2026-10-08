@@ -96,24 +96,82 @@ function AutoRouting({ r }: { r: Relay }): React.JSX.Element {
         )}
       </div>
 
-      {routed.length > 0 ? (
-        <div className="field">
-          <span className="field-label">Décisions du routeur</span>
-          <ul className="decisions">
-            {routed.map((v) => (
-              <li key={v.task.id} onClick={() => r.setSelectedId(v.task.id)}>
-                <span className={`tier tier-${v.task.tier}`}>{v.task.tier}</span>
-                <span className="decision-main">
-                  #{v.task.id} → <strong>{v.provider}</strong> · {v.model}
-                  {v.fallbackFrom !== undefined ? <span className="badge warn">repli</span> : null}
-                </span>
-                {v.reason !== undefined ? <span className="muted small decision-why">{v.reason}</span> : null}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      {routed.length > 0 ? <LiveDecisions r={r} /> : null}
     </>
+  );
+}
+
+/**
+ * Décisions du routeur, en direct : pour chaque tâche, les modèles essayés dans l'ordre
+ * (✗ abandonné et pourquoi, ● en cours avec ce qu'il fait et depuis quand, ✓ réussi), puis les
+ * replis encore prévus. Un clic sélectionne la tâche ; « journal » ouvre son journal.
+ */
+function LiveDecisions({ r }: { r: Relay }): React.JSX.Element {
+  const rows = r.views.filter((v) => v.userError === undefined && v.model !== undefined);
+  return (
+    <div className="field">
+      <span className="field-label">Décisions du routeur — en direct</span>
+      <ul className="decisions live">
+        {rows.map((v) => {
+          const tries = v.tries ?? [];
+          const tried = new Set(tries.map((t) => `${t.provider}/${t.model}`));
+          const next = v.status === "running" || v.status === "pending" ? (v.alternatives ?? []).filter((a) => !tried.has(`${a.provider}/${a.model}`)).slice(0, 2) : [];
+          const elapsed = v.startedAt !== undefined ? Math.max(0, Math.round((r.now - v.startedAt) / 1000)) : 0;
+          return (
+            <li
+              key={v.task.id}
+              className={`dec dec-${v.status} ${r.selectedView?.task.id === v.task.id ? "dec-selected" : ""}`}
+              onClick={() => r.setSelectedId(v.task.id)}
+            >
+              <div className="dec-head">
+                <span className={`tier tier-${v.task.tier}`}>{v.task.tier}</span>
+                <span className={`dot dot-${v.status}`} />
+                <span className="dec-desc">
+                  #{v.task.id} {v.task.description}
+                </span>
+                <button
+                  className="link"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    r.focusJournal(v.task.id);
+                  }}
+                >
+                  journal
+                </button>
+              </div>
+              <div className="dec-chain">
+                {tries.length === 0 ? (
+                  <span className="try try-planned">
+                    {v.provider} · {v.model}
+                  </span>
+                ) : (
+                  tries.map((t, i) => (
+                    <span key={i} className={`try try-${t.state}`} title={t.why}>
+                      {t.state === "failed" ? "✗ " : t.state === "ok" ? "✓ " : "● "}
+                      {t.provider} · {t.model}
+                    </span>
+                  ))
+                )}
+                {next.map((a) => (
+                  <span key={`${a.provider}/${a.model}`} className="try try-planned" title={a.reason}>
+                    → {a.provider} · {a.model}
+                  </span>
+                ))}
+              </div>
+              {v.status === "running" && v.activity !== undefined ? (
+                <div className="dec-live">
+                  {v.activity.text} · {elapsed} s
+                </div>
+              ) : tries.some((t) => t.state === "failed" && t.why) ? (
+                <div className="muted small dec-why">{tries.filter((t) => t.state === "failed" && t.why).map((t) => `${t.model} : ${t.why}`).join(" · ")}</div>
+              ) : v.reason !== undefined ? (
+                <div className="muted small dec-why">{v.reason}</div>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -155,6 +213,7 @@ function ManualRouting({ r }: { r: Relay }): React.JSX.Element {
           </button>
         </p>
       )}
+      {r.views.some((v) => v.model !== undefined && v.userError === undefined) ? <LiveDecisions r={r} /> : null}
       {catalog.error !== undefined && r.selected?.ready === true ? (
         <p className="inline-error">
           ⚠ {catalog.error.title} — {catalog.error.detail}
@@ -168,7 +227,7 @@ export function PipelinePanel(): React.JSX.Element {
   const r = useRelay();
   return (
     <div className="panel panel-flush">
-      <ZoomableDag views={r.views} selectedId={r.selectedView?.task.id ?? null} onSelect={r.setSelectedId} />
+      <ZoomableDag views={r.views} selectedId={r.selectedView?.task.id ?? null} onSelect={r.setSelectedId} now={r.now} />
     </div>
   );
 }
@@ -177,6 +236,11 @@ export function DetailPanel(): React.JSX.Element {
   const r = useRelay();
   return (
     <div className="panel">
+      {r.selectedView !== undefined && r.selectedView.userError === undefined ? (
+        <button className="link journal-link" onClick={() => r.focusJournal(r.selectedView?.task.id ?? null)}>
+          Voir le journal de cette tâche
+        </button>
+      ) : null}
       {r.selectedView?.userError !== undefined ? <ErrorDetail err={r.selectedView.userError} /> : <TaskDetail view={r.selectedView} />}
     </div>
   );
@@ -272,7 +336,9 @@ const time = (at: number): string => new Date(at).toLocaleTimeString("fr-FR", { 
 export function JournalPanel(): React.JSX.Element {
   const r = useRelay();
   const [filter, setFilter] = useState<LogFilter>("all");
-  const [taskFilter, setTaskFilter] = useState("");
+  const taskFilter = r.journalTask ?? "";
+  const setTaskFilter = (id: string): void => r.setJournalTask(id === "" ? null : id);
+  const selectedTask = r.selectedView?.task.id;
   const [query, setQuery] = useState("");
   const [raw, setRaw] = useState(false);
   const [open, setOpen] = useState<Set<number>>(new Set());
@@ -349,10 +415,23 @@ export function JournalPanel(): React.JSX.Element {
           {shown.map(({ entry, index }) => {
             const expanded = raw || open.has(index);
             return (
-              <li key={index} className={`log log-${entry.level}`}>
+              <li key={index} className={`log log-${entry.level} ${entry.taskId !== undefined && entry.taskId === selectedTask ? "log-selected" : ""}`}>
                 <button className="log-line" onClick={() => toggle(index)} disabled={raw}>
                   <span className="log-time">{time(entry.at)}</span>
                   <span className="log-icon">{LOG_ICON[entry.category]}</span>
+                  {entry.taskId !== undefined ? (
+                    <span
+                      className="log-task"
+                      role="link"
+                      title="Montrer cette tâche dans le graphe"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        r.setSelectedId(entry.taskId ?? null);
+                      }}
+                    >
+                      #{entry.taskId}
+                    </span>
+                  ) : null}
                   <span className="log-title">{entry.title}</span>
                   {entry.detail !== undefined && !raw ? <span className="log-more">{expanded ? "▾" : "▸"}</span> : null}
                 </button>
