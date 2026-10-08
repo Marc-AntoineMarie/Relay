@@ -1,7 +1,7 @@
 # HANDOFF — reprendre Relay
 
 > **À lire en premier dans toute nouvelle session.** Mis à jour à chaque contribution.
-> Dernière mise à jour : **2026-10-08** — fin de la **phase G**, en attente de validation.
+> Dernière mise à jour : **2026-10-08** — fin de la **phase H**, en attente de validation.
 
 ## En une phrase
 
@@ -23,8 +23,9 @@ dossier par run, lance des commandes (tests) et corrige ; l'utilisateur voit et 
 | D | **actions réelles** : dossier de travail, fichiers, commandes (Prudent/Sûr/Libre), panneaux Fichiers + Exécution, vérification + escalade ; **contrats partagés** + `spec` par tâche ; **boucle test → correction** (session par dossier, erreurs remontées en nœuds rouges, *Corriger avec Relay*, Aperçu HTML) | ✅ validé |
 | E | **projets et conversations** : noms simples + emplacement, conversation et historique par projet, **questions de cadrage**, **mémoire** (`RELAY.md` par projet, mémoire globale), activité en direct dans le fil | ✅ validé |
 | F | **Ollama intégré** (machine, installation sans mot de passe, serveur, modèles, **VPS par tunnel SSH**, guide Oracle Always Free, Ollama Cloud) + comptes **NVIDIA**, Cerebras, Mistral, Hugging Face + lancements vérifiés (commande exacte, `timeout 5`) | ✅ validé |
-| **G** | **terminal intégré** : xterm.js + pont pty Python (pas de module natif) dans le dossier du projet, sans clés API, « Erreur → Relay » / « → Conversation » ; serveur limité à la machine locale | ✅ codé et testé, **en attente de validation** |
-| H | **métriques sérieuses** : chaque chiffre justifié (formule, source et date des prix), Réglages › Métriques (baseline, table de prix, orchestration incluse ou non), historique (SQLite, v0.2), quotas lus chez les fournisseurs (en-têtes `x-ratelimit-*`, soldes OpenRouter/DeepSeek, compteurs locaux Gemini) | à faire |
+| G | **terminal intégré** : xterm.js + pont pty Python (pas de module natif) dans le dossier du projet, sans clés API, « Erreur → Relay » / « → Conversation » ; serveur limité à la machine locale | ✅ validé |
+| **H** | **métriques sérieuses + tableau de bord** (registre SQLite de chaque appel, payé / équivalent / référence / économie justifiés, quotas des comptes, budget mensuel, prix et référence réglables) | ✅ codé et testé, **en attente de validation** |
+| ~~H (prévu)~~ | ~~métriques sérieuses~~ : chaque chiffre justifié (formule, source et date des prix), Réglages › Métriques (baseline, table de prix, orchestration incluse ou non), historique (SQLite, v0.2), quotas lus chez les fournisseurs (en-têtes `x-ratelimit-*`, soldes OpenRouter/DeepSeek, compteurs locaux Gemini) | à faire |
 | I | **activité visible** : animation du graphe et des décisions du routeur, liée au journal (promise ; une partie est déjà dans la carte « en direct » de la Conversation) | à faire |
 | plus tard | **skills** (recettes réutilisables, façon Claude Code) | idée |
 | proposé | **mémoire par expériences** (inspirée de Hindsight) : retenir les erreurs corrigées et leurs causes, les contraintes de la machine, la lenteur des modèles ; les rappeler quand c'est pertinent ; backend Hindsight optionnel plus tard | voir `docs/INSPIRATIONS.md` |
@@ -32,8 +33,7 @@ dossier par run, lance des commandes (tests) et corrige ; l'utilisateur voit et 
 
 Ordre recommandé à l'utilisateur : E → F → G → H → I (il peut le changer).
 
-**Prochaine action** : attendre la validation de la phase G, puis H (métriques sérieuses, à fusionner
-avec le dashboard inspiré de Paperclip). Idées à ressortir à l'utilisateur au bon moment (skills/shark
+**Prochaine action** : attendre la validation de la phase H, puis I (animation de l'activité). Idées à ressortir à l'utilisateur au bon moment (skills/shark
 dans Relay, comparaison avec/sans Relay, méthode d'efficacité) : voir la mémoire `relay-ideas-later`
 et la section « proposé » ci-dessous.
 
@@ -48,7 +48,7 @@ Relay → le rappeler à l'utilisateur, il a demandé qu'on s'en souvienne.
 
 ```bash
 pnpm install          # une fois (télécharge aussi le binaire Electron)
-pnpm test             # 140 tests Vitest (core, providers, server), hors réseau
+pnpm test             # 143 tests Vitest (core, providers, server), hors réseau
 pnpm typecheck        # tsc -b : core, providers, cli, server
 pnpm --filter @relay/web typecheck   # le front n'est pas dans tsc -b
 pnpm desktop          # build + fenêtre Electron (usage normal)
@@ -68,8 +68,8 @@ est connecté (abonnement) mais **à ne pas utiliser pour les tests** (désactiv
 |---|---|---|
 | `core` | moteur | `types.ts` (contrat), `catalog.ts` (profils modèles), `decomposer/` (plan, besoins, contrats, spec), `router/index.ts` (manuel), `router/auto.ts` (AutoRouter, TaskRouting, escalade), `router/health.ts`, `executor/` (candidats, repli, patience, escalade, événements en direct via `emit`/`streamWhile`, synthèse), `agent/` (`agenticRunTask` : boucle agent), `workspace/` (`Workspace` confiné, protocole `===FILE===`, politiques et exécution des commandes), `errors.ts`, `metrics/`, `config.ts` |
 | `providers` | adaptateurs LLM | `anthropic.ts`, `claude-code.ts` (spawn `claude -p`), `openai-compatible.ts` (Gemini/Groq/…, repli, `reasoning_effort`), `factory.ts` (presets, `createProvider`, `autoPoolModels`, filtrage, suggestions) |
-| `server` | API locale | `src/terminal.ts` (terminal : pont pty Python, sessions, SSE) ; `src/ollama.ts` (machine, installation, serveur, modèles, VPS/tunnel SSH) ; `src/projects.ts` (projets : noms, index, import, conversation, `RELAY.md`) ; `src/session.ts` (session `.relay/session.json`, correction directe, ids par tour) ; `src/index.ts` : `/api/state`, `/api/models`, `/api/pool`, `/api/settings` (GET/PUT → `.relay/settings.json`), `/api/keys` (+ `/test`, `/delete`), `/api/run` (SSE, modes auto/manuel, synthèse, budget, dossier de travail, validations), `/api/approve`, `/api/workspace/{runs,files,file,run,open,launches,stop}`, `/api/projects/{,detail,memory,import}`, `/api/ollama/*` (status, install, start, stop, pull, delete, test, remote/{key,check,install,connect,disconnect}), aperçu `GET /ws/<dossier en base64url>/<chemin>` ; contrôle d'origine ; `src/workspace.ts` (dossiers de run, confinement, outils installés, ouvrir dossier/VS Code) |
-| `web` | UI React + Vite | `terminal.tsx` (xterm.js) ; `OllamaSettings.tsx` (Réglages › Ollama) ; `conversation.tsx` (Conversation : projets, fil, questions, résultats, mémoire) ; `App.tsx` (dockview, disposition **v6**, bouton Réglages, bandeau de validation), `store.tsx` (état partagé, réglages côté moteur, fichiers/commandes/validations), `panels.tsx` (Demande, Modèles, Pipeline, Tâche, Résultat, Coûts, Journal), `workspace-panels.tsx` (Fichiers, Exécution, Aperçu, détail d'erreur, validations), `Settings.tsx` (Comptes et clés, Modèles, Routage, Général), `components.tsx`, `PipelineView.tsx` (graphe zoomable) |
+| `server` | API locale | `src/usage.ts` (registre d'usage SQLite, `meter()`, agrégats, CSV) ; `src/terminal.ts` (terminal : pont pty Python, sessions, SSE) ; `src/ollama.ts` (machine, installation, serveur, modèles, VPS/tunnel SSH) ; `src/projects.ts` (projets : noms, index, import, conversation, `RELAY.md`) ; `src/session.ts` (session `.relay/session.json`, correction directe, ids par tour) ; `src/index.ts` : `/api/state`, `/api/models`, `/api/pool`, `/api/settings` (GET/PUT → `.relay/settings.json`), `/api/keys` (+ `/test`, `/delete`), `/api/run` (SSE, modes auto/manuel, synthèse, budget, dossier de travail, validations), `/api/approve`, `/api/workspace/{runs,files,file,run,open,launches,stop}`, `/api/projects/{,detail,memory,import}`, `/api/ollama/*` (status, install, start, stop, pull, delete, test, remote/{key,check,install,connect,disconnect}), aperçu `GET /ws/<dossier en base64url>/<chemin>` ; contrôle d'origine ; `src/workspace.ts` (dossiers de run, confinement, outils installés, ouvrir dossier/VS Code) |
+| `web` | UI React + Vite | `Dashboard.tsx` (tableau de bord, Réglages › Métriques) ; `terminal.tsx` (xterm.js) ; `OllamaSettings.tsx` (Réglages › Ollama) ; `conversation.tsx` (Conversation : projets, fil, questions, résultats, mémoire) ; `App.tsx` (dockview, disposition **v6**, bouton Réglages, bandeau de validation), `store.tsx` (état partagé, réglages côté moteur, fichiers/commandes/validations), `panels.tsx` (Demande, Modèles, Pipeline, Tâche, Résultat, Coûts, Journal), `workspace-panels.tsx` (Fichiers, Exécution, Aperçu, détail d'erreur, validations), `Settings.tsx` (Comptes et clés, Modèles, Routage, Général), `components.tsx`, `PipelineView.tsx` (graphe zoomable) |
 | `desktop` | Electron | `main.cjs` : démarre le serveur en interne (port 47474, sinon libre) et ouvre la fenêtre |
 | `cli` | ligne de commande | `src/index.ts` (`--provider`, `--model`) |
 
@@ -168,6 +168,11 @@ est connecté (abonnement) mais **à ne pas utiliser pour les tests** (désactiv
   corrections : Relay relance la commande après chaque écriture.
 - **Vérification des lancements** : agents → commande exacte, `timeout 5 <cmd>` (124 = en marche,
   succès) ; `Task.mustVerify` pour les corrections.
+- **Métriques (phase H)** : `.relay/relay.db` (`node:sqlite`, avertissement « experimental » sous
+  Node 22, normal). Tous les providers des runs passent par `meter()` ; `CompletionRequest.tag`
+  dit l'usage (plan, task, synthesis, memory). `RELAY_DB=/chemin` pour tester sur une autre base
+  (ne jamais générer de données fictives dans la vraie base de l'utilisateur). Équivalent et
+  référence recalculés à la lecture ; payé figé à l'appel.
 - **Réseau** : le serveur écoute sur `127.0.0.1` + `::1` uniquement (deux `http.Server`, même
   port). Ne jamais revenir à `listen(port)` sans hôte (tout le réseau local y aurait accès).
 - **Terminal** : pont Python `pty` passé en `python3 -c` (pas de fichier à copier dans `dist`) ;

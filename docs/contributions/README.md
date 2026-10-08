@@ -44,7 +44,8 @@ Ce qui reste à faire ou à surveiller.
 
 | Date | Contribution | Statut |
 |---|---|---|
-| 2026-10-08 | [Phase G — terminal intégré](2026-10-08-phase-g-terminal.md) | en attente de validation |
+| 2026-10-08 | [Phase H — métriques sérieuses et tableau de bord](2026-10-08-phase-h-metriques.md) | en attente de validation |
+| 2026-10-08 | [Phase G — terminal intégré](2026-10-08-phase-g-terminal.md) | validée |
 | 2026-10-08 | [Phase F — Ollama intégré, comptes gratuits NVIDIA & co, lancements vérifiés](2026-10-08-phase-f-ollama-et-comptes.md) | validée |
 | 2026-10-08 | [Phase E — projets, conversations, questions de cadrage, mémoire](2026-10-08-phase-e-projets-conversations.md) | validée |
 | 2026-10-07 | [Boucle test → correction : sessions, erreurs remontées, aperçu](2026-10-07-boucle-test-correction.md) | validée |

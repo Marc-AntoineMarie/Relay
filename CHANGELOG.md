@@ -11,7 +11,27 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/), versions 
 
 ## [Non publié] — 0.1.0 en cours
 
-### Phase G — terminal intégré · 2026-10-08 · *en attente de validation*
+### Phase H — métriques sérieuses et tableau de bord · 2026-10-08 · *en attente de validation*
+
+Commit `46a2946` + docs · détail : [contribution](docs/contributions/2026-10-08-phase-h-metriques.md)
+
+#### Ajouté
+
+- **Registre d'usage** SQLite local (`node:sqlite`) : chaque appel de modèle (échecs, replis,
+  mémoire compris) et chaque run, conservés.
+- **Tableau de bord** inspiré de Paperclip : payé, équivalent API, référence, économie (dont
+  routage) avec leurs définitions ; par jour, par usage (tâches vs orchestration), par compte (quota
+  annoncé, 1re réponse), par modèle, par projet ; activité récente ; soldes OpenRouter / DeepSeek ;
+  export CSV.
+- **Réglages › Métriques** : modèle de référence, budget mensuel avec alerte (au-delà : gratuit et
+  abonnement seulement), table des prix de référence modifiable (source et date), effacement.
+
+#### Corrigé
+
+- Temps de première réponse mesuré depuis l'envoi (il valait ≈ 0) : le routage par latence voit
+  enfin les files d'attente.
+
+### Phase G — terminal intégré · 2026-10-08 · validée
 
 Commit `93ea227` + docs · détail : [contribution](docs/contributions/2026-10-08-phase-g-terminal.md)
 

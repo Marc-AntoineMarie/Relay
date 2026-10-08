@@ -1,6 +1,6 @@
 # 2026-10-08 — Phase G : terminal intégré
 
-- **Statut** : en attente de validation par l'utilisateur
+- **Statut** : validée (« go faire la H »)
 - **Commits** : `93ea227` · docs
 
 ## Demande
