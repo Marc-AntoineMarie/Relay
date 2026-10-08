@@ -187,6 +187,13 @@ export function MetricsPanel(): React.JSX.Element {
   return (
     <div className="panel">
       <MetricsBar m={r.metrics} />
+      <p className="muted small">
+        Run en cours ou dernier run. Payé = dépense réelle (comptes à l'usage) ; équivalent API = prix public des modèles
+        utilisés ; référence = mêmes tokens au prix de {r.settings.baselineModel}.{" "}
+        <button className="link" onClick={r.openDashboard}>
+          Tableau de bord (historique, comptes, budget)
+        </button>
+      </p>
     </div>
   );
 }

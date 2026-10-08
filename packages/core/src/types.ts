@@ -208,6 +208,25 @@ export interface CompletionRequest {
   format?: StructuredFormat;
   /** Annulation : arrêt du pipeline, ou « passer au modèle suivant » (raison "skip"). */
   signal?: AbortSignal;
+  /** À quoi sert l'appel (métriques) : plan, tâche, synthèse, mémoire. */
+  tag?: CallTag;
+}
+
+export type CallPurpose = "plan" | "task" | "synthesis" | "memory" | "other";
+
+export interface CallTag {
+  purpose: CallPurpose;
+  taskId?: string;
+}
+
+/** Quotas annoncés par le fournisseur dans les en-têtes de réponse (x-ratelimit-*). */
+export interface RateLimitSnapshot {
+  limitRequests?: number;
+  remainingRequests?: number;
+  resetRequests?: string;
+  limitTokens?: number;
+  remainingTokens?: number;
+  resetTokens?: string;
 }
 
 export interface Usage {
@@ -228,7 +247,9 @@ export type CompletionChunk =
   /** Requête servie par un modèle de repli (le modèle demandé était saturé ou retiré). */
   | { type: "model"; model: string; fallbackFrom: string }
   /** Temps jusqu'au premier morceau de réponse (file d'attente du fournisseur comprise). */
-  | { type: "latency"; firstChunkMs: number };
+  | { type: "latency"; firstChunkMs: number }
+  /** Quotas restants annoncés par le fournisseur (si ses en-têtes les donnent). */
+  | { type: "quota"; quota: RateLimitSnapshot };
 
 /** Modèle choisi pour chaque tier de routage. */
 export type TierModels = Record<RouteTier, string>;

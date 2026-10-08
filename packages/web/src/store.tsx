@@ -97,7 +97,7 @@ interface Catalog {
   error?: ErrorDescription;
 }
 
-export type SettingsSection = "accounts" | "models" | "routing" | "ollama" | "general";
+export type SettingsSection = "accounts" | "models" | "routing" | "metrics" | "ollama" | "general";
 
 const DEFAULT_SETTINGS: Settings = {
   mode: "auto",
@@ -113,6 +113,10 @@ const DEFAULT_SETTINGS: Settings = {
   projectMemory: true,
   maxCallMinutes: 5,
   autoFix: true,
+  baselineModel: "claude-opus-5-5",
+  priceOverrides: {},
+  budgetMonthly: null,
+  budgetAlertPct: 80,
 };
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -150,6 +154,9 @@ function useRelayState() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [runInfo, setRunInfo] = useState<{ mode: Mode; accounts: string[]; strategy?: Strategy } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<SettingsSection | null>(null);
+  const [dashboardOpen, setDashboardOpen] = useState(false);
+  // Incrémenté à la fin de chaque run : le tableau de bord et l'alerte budget se rafraîchissent.
+  const [usageTick, setUsageTick] = useState(0);
   // Phase D : dossier de travail du run, fichiers, commandes, validations.
   const [workspace, setWorkspace] = useState<string | null>(null);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
@@ -785,6 +792,7 @@ function useRelayState() {
       abortRef.current = null;
       setApprovals([]);
       void refreshProjects();
+      setUsageTick((t) => t + 1);
       if (runRoot !== null) {
         void refreshFiles(runRoot); // fichiers créés par les commandes aussi (et RELAY.md)
         void reloadProject(runRoot); // conversation et mémoire, version du moteur
@@ -848,7 +856,14 @@ function useRelayState() {
     logs,
     runInfo,
     settingsOpen,
-    openSettings: (section: SettingsSection = "accounts") => setSettingsOpen(section),
+    openSettings: (section: SettingsSection = "accounts") => {
+      setDashboardOpen(false);
+      setSettingsOpen(section);
+    },
+    dashboardOpen,
+    openDashboard: () => setDashboardOpen(true),
+    closeDashboard: () => setDashboardOpen(false),
+    usageTick,
     closeSettings: () => setSettingsOpen(null),
     chooseProvider,
     changeTiers,

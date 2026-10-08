@@ -46,6 +46,15 @@ describe("garde-fous de durée des modèles", () => {
     expect(await drain(make(slowFetch(3, 10), 1_000, 5_000))).toBe("m0 m1 m2 ");
   });
 
+  it("le temps de première réponse compte depuis l'envoi (file d'attente comprise)", async () => {
+    const p = make(slowFetch(2, 150), 1_000, 5_000);
+    let first: number | undefined;
+    for await (const c of p.complete({ model: "m", system: "", messages: [{ role: "user", content: "x" }] })) {
+      if (c.type === "latency") first = c.firstChunkMs;
+    }
+    expect(first).toBeGreaterThanOrEqual(130);
+  });
+
   it("modèle muet trop longtemps → délai dépassé (repli possible)", async () => {
     const err = await drain(make(slowFetch(3, 400), 100, 5_000)).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ProviderRequestError);

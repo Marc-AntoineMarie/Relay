@@ -112,7 +112,49 @@ export function profileModel(model: string): ModelProfile {
 }
 
 /** Coût au tarif API de référence ($) — échelle commune pour comparer tous les backends. */
-export function referenceCost(model: string, inputTokens: number, outputTokens: number): number {
+/** Date de la dernière revue des prix de référence du catalogue. */
+export const PRICES_REVIEWED = "2026-10-08";
+
+export interface PriceOverride {
+  inputPerM: number;
+  outputPerM: number;
+}
+
+/** Prix personnalisés par famille (Réglages › Métriques) : ils remplacent la référence du catalogue. */
+let overrides: Record<string, PriceOverride> = {};
+
+export function setPriceOverrides(next: Record<string, PriceOverride>): void {
+  overrides = Object.fromEntries(
+    Object.entries(next).filter(([, v]) => Number.isFinite(v.inputPerM) && Number.isFinite(v.outputPerM) && v.inputPerM >= 0 && v.outputPerM >= 0),
+  );
+}
+
+/** Prix appliqué à un modèle ($/M tokens) et d'où il vient. */
+export function priceOf(model: string): { inputPerM: number; outputPerM: number; family: string; source: "catalogue" | "personnalisé" | "deviné" } {
   const p = profileModel(model);
+  const o = overrides[p.family];
+  if (o !== undefined) return { ...o, family: p.family, source: "personnalisé" };
+  return { inputPerM: p.inputPerM, outputPerM: p.outputPerM, family: p.family, source: p.known ? "catalogue" : "deviné" };
+}
+
+/** Table des prix de référence (une ligne par famille connue), pour l'afficher et la justifier. */
+export function priceTable(): Array<{ family: string; level: RouteTier; inputPerM: number; outputPerM: number; source: "catalogue" | "personnalisé"; defaultInputPerM: number; defaultOutputPerM: number }> {
+  return RULES.map((r) => {
+    const o = overrides[r.family];
+    return {
+      family: r.family,
+      level: r.profile.level,
+      inputPerM: o?.inputPerM ?? r.profile.inputPerM,
+      outputPerM: o?.outputPerM ?? r.profile.outputPerM,
+      source: o !== undefined ? ("personnalisé" as const) : ("catalogue" as const),
+      defaultInputPerM: r.profile.inputPerM,
+      defaultOutputPerM: r.profile.outputPerM,
+    };
+  });
+}
+
+/** Coût au prix public de référence (« équivalent API »), prix personnalisés compris. */
+export function referenceCost(model: string, inputTokens: number, outputTokens: number): number {
+  const p = priceOf(model);
   return (inputTokens / 1_000_000) * p.inputPerM + (outputTokens / 1_000_000) * p.outputPerM;
 }

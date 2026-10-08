@@ -392,6 +392,7 @@ async function* attemptOnce(
     messages: [{ role: "user", content: prompt }],
     maxTokens: DEFAULT_WORKER_MAX_TOKENS,
     signal,
+    tag: { purpose: "task", taskId: task.id },
   };
 
   const started = Date.now();
@@ -488,6 +489,7 @@ async function* synthesize(pipeline: Pipeline, routing: TaskRouting, signal?: Ab
           messages: [{ role: "user", content: prompt }],
           maxTokens: SYNTHESIS_MAX_TOKENS,
           ...(signal !== undefined ? { signal } : {}),
+          tag: { purpose: "synthesis" },
         },
         provider,
         onChunk: () => undefined,

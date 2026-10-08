@@ -28,6 +28,10 @@ import {
   agenticRunTask,
   clipMemory,
   MEMORY_FILE,
+  PRICES_REVIEWED,
+  priceTable,
+  setPriceOverrides,
+  type PriceOverride,
   updateProjectMemory,
   type ModelAssignment,
   AutoRouter,
@@ -117,6 +121,7 @@ import {
   tunnelState,
   type RemoteTarget,
 } from "./ollama.js";
+import { meter, monthStart, periodStart, summarize, toCsv, UsageStore, type MeterContext, type Period } from "./usage.js";
 import { closeTerminal, listTerminals, openTerminal, resizeTerminal, shutdownTerminals, streamTerminal, writeTerminal } from "./terminal.js";
 import {
   appendMessage,
@@ -256,6 +261,14 @@ interface RelaySettings {
   maxCallMinutes: number;
   /** Si la vérification finale échoue, l'interface lance une correction automatique (une fois). */
   autoFix: boolean;
+  /** Modèle de référence des économies : « et si tout était passé par ce modèle ? ». */
+  baselineModel: string;
+  /** Prix personnalisés par famille ($/M tokens), à la place de la référence du catalogue. */
+  priceOverrides: Record<string, PriceOverride>;
+  /** Budget mensuel ($, comptes à l'usage) ; null = pas de limite. */
+  budgetMonthly: number | null;
+  /** Seuil d'alerte du budget mensuel (% du budget). */
+  budgetAlertPct: number;
   /** Ollama utilisé par Relay : sur cette machine, ou sur un VPS (tunnel SSH). */
   ollamaTarget: "local" | "remote";
   /** VPS pour Ollama (la clé SSH reste sur ta machine). */
@@ -284,6 +297,10 @@ const DEFAULT_SETTINGS: RelaySettings = {
   projectMemory: true,
   maxCallMinutes: 5,
   autoFix: true,
+  baselineModel: "claude-opus-5-5",
+  priceOverrides: {},
+  budgetMonthly: null,
+  budgetAlertPct: 80,
   ollamaTarget: "local",
   ollamaRemote: null,
 };
@@ -308,6 +325,18 @@ function sanitizeSettings(raw: Partial<RelaySettings>): RelaySettings {
     maxCallMinutes:
       typeof raw.maxCallMinutes === "number" && raw.maxCallMinutes >= 1 && raw.maxCallMinutes <= 60 ? raw.maxCallMinutes : DEFAULT_SETTINGS.maxCallMinutes,
     autoFix: typeof raw.autoFix === "boolean" ? raw.autoFix : DEFAULT_SETTINGS.autoFix,
+    baselineModel: typeof raw.baselineModel === "string" && raw.baselineModel.trim() ? raw.baselineModel.trim().slice(0, 120) : DEFAULT_SETTINGS.baselineModel,
+    priceOverrides:
+      typeof raw.priceOverrides === "object" && raw.priceOverrides !== null
+        ? Object.fromEntries(
+            Object.entries(raw.priceOverrides).filter(
+              ([, v]) => typeof v?.inputPerM === "number" && typeof v.outputPerM === "number" && v.inputPerM >= 0 && v.outputPerM >= 0,
+            ),
+          )
+        : {},
+    budgetMonthly: typeof raw.budgetMonthly === "number" && raw.budgetMonthly >= 0 ? raw.budgetMonthly : null,
+    budgetAlertPct:
+      typeof raw.budgetAlertPct === "number" && raw.budgetAlertPct >= 1 && raw.budgetAlertPct <= 100 ? raw.budgetAlertPct : DEFAULT_SETTINGS.budgetAlertPct,
     ollamaTarget: raw.ollamaTarget === "remote" ? "remote" : "local",
     ollamaRemote:
       typeof raw.ollamaRemote === "object" && raw.ollamaRemote !== null
@@ -322,12 +351,26 @@ function sanitizeSettings(raw: Partial<RelaySettings>): RelaySettings {
 }
 
 function loadSettings(): RelaySettings {
+  let s: RelaySettings;
   try {
-    return sanitizeSettings(JSON.parse(readFileSync(settingsPath(), "utf8")) as Partial<RelaySettings>);
+    s = sanitizeSettings(JSON.parse(readFileSync(settingsPath(), "utf8")) as Partial<RelaySettings>);
   } catch {
-    return sanitizeSettings({});
+    s = sanitizeSettings({});
   }
+  setPriceOverrides(s.priceOverrides); // les prix personnalisés valent partout (runs, tableau de bord)
+  return s;
 }
+
+// ── Registre d'usage (phase H) ──────────────────────────────────────────────
+
+let usageStore: UsageStore | null = null;
+// RELAY_DB : autre base (tests, essais) — sinon .relay/relay.db du dépôt.
+const usage = (): UsageStore => (usageStore ??= new UsageStore(process.env["RELAY_DB"] || join(ROOT_DIR, ".relay", "relay.db")));
+
+/** Run en cours (un seul à la fois) : à quoi imputer les appels, et ce qu'on retiendra du run. */
+let meterCtx: MeterContext = { runId: "", project: "" };
+const runState = { outcome: "error", tasks: 0, root: "", launchOk: undefined as boolean | undefined };
+const metered = (p: Provider): Provider => meter(p, usage(), () => meterCtx);
 
 function saveSettings(settings: RelaySettings): void {
   mkdirSync(dirname(settingsPath()), { recursive: true });
@@ -664,6 +707,8 @@ async function setupAgent(
   const continued = body.workspace !== undefined;
   const workspace = new Workspace(continued ? runRoot(body.workspace) : createProjectDir(settings, prompt, body));
   const name = basename(workspace.root);
+  meterCtx = { ...meterCtx, project: name };
+  runState.root = workspace.root;
   const session = loadSession(workspace.root);
   const round = session.turns.length + 1;
   const memory = readMemory(workspace.root);
@@ -740,6 +785,7 @@ function askQuestions(pipeline: Pipeline, agent: AgentSetup, res: ServerResponse
     });
   }
   sseWrite(res, { type: "questions", questions, analysis: pipeline.analysis ?? "" });
+  runState.outcome = "questions";
   return true;
 }
 
@@ -817,6 +863,9 @@ async function executeAndRecord(
       launchCheck = await checkLaunch(agent.workspace.root, opts.pipeline.launch, res, opts.signal);
     }
   } finally {
+    runState.outcome = outcome;
+    runState.tasks = opts.pipeline.tasks.length;
+    if (launchCheck !== undefined) runState.launchOk = launchCheck.ok;
     if (agent.workspace !== undefined) {
       const root = agent.workspace.root;
       const p = opts.pipeline;
@@ -920,7 +969,7 @@ async function runManual(body: RunBody, prompt: string, res: ServerResponse, sig
   applyTierModels(config, providerName, body);
 
   const settings = loadSettings();
-  const provider = createProvider(providerName, { cwd: ROOT_DIR, maxDurationMs: settings.maxCallMinutes * 60_000 });
+  const provider = metered(createProvider(providerName, { cwd: ROOT_DIR, maxDurationMs: settings.maxCallMinutes * 60_000 }));
   sseWrite(res, { type: "mode", mode: "manual", accounts: [PROVIDER_PRESETS[providerName]?.label ?? providerName] });
   const agent = await setupAgent(settings, prompt, body, res, signal);
   let pipeline: Pipeline;
@@ -946,7 +995,7 @@ async function runManual(body: RunBody, prompt: string, res: ServerResponse, sig
   const runTask = agent.runTask !== undefined ? { runTask: agent.runTask } : {};
   const memoryModels: MemoryModel[] = [{ provider, model: config.routes.quick }];
   await executeAndRecord(
-    { pipeline, provider, router: new Router(config), signal, synthesis, onAttempt: trackAttempt, ...runTask },
+    { pipeline, provider, router: new Router(config), signal, synthesis, onAttempt: trackAttempt, baselineModel: settings.baselineModel, ...runTask },
     res,
     agent,
     body,
@@ -961,9 +1010,21 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
   const strategy: Strategy =
     body.strategy !== undefined && STRATEGIES.includes(body.strategy) ? body.strategy : settings.strategy;
   const policies = { ...settings.policies, ...body.policies };
-  const budget = body.budgetPerRun !== undefined ? body.budgetPerRun : settings.budgetPerRun;
+  // Budget du run : le plus serré entre le budget par run et ce qui reste du budget mensuel.
+  const perRun = body.budgetPerRun !== undefined ? body.budgetPerRun : settings.budgetPerRun;
+  const spentThisMonth = usage().billedSince(monthStart());
+  const monthLeft = settings.budgetMonthly === null ? null : Math.max(0, settings.budgetMonthly - spentThisMonth);
+  const budget = perRun === null ? monthLeft : monthLeft === null ? perRun : Math.min(perRun, monthLeft);
   const synthesis = body.synthesis ?? settings.synthesis;
 
+  if (settings.budgetMonthly !== null && settings.budgetMonthly > 0) {
+    const pct = (spentThisMonth / settings.budgetMonthly) * 100;
+    if (monthLeft === 0) {
+      sseLog(res, { level: "warn", category: "info", title: `Budget mensuel atteint ($${spentThisMonth.toFixed(2)} / $${settings.budgetMonthly.toFixed(2)}) : comptes payants exclus, gratuits et abonnement seulement` });
+    } else if (pct >= settings.budgetAlertPct) {
+      sseLog(res, { level: "warn", category: "info", title: `Budget mensuel à ${Math.round(pct)} % ($${spentThisMonth.toFixed(2)} / $${settings.budgetMonthly.toFixed(2)})` });
+    }
+  }
   const accounts = await buildPool(policies);
   for (const a of accounts) {
     if (a.error !== undefined) {
@@ -990,7 +1051,7 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
   const getProvider = (name: string): Provider => {
     let p = providers.get(name);
     if (p === undefined) {
-      p = createProvider(name, { cwd: ROOT_DIR, fallbacks: false, maxDurationMs: settings.maxCallMinutes * 60_000 }); // les replis passent par le routeur
+      p = metered(createProvider(name, { cwd: ROOT_DIR, fallbacks: false, maxDurationMs: settings.maxCallMinutes * 60_000 })); // les replis passent par le routeur
       providers.set(name, p);
     }
     return p;
@@ -1048,7 +1109,15 @@ async function runAuto(body: RunBody, prompt: string, res: ServerResponse, signa
     .slice(0, 3)
     .map((c) => ({ provider: getProvider(c.provider), model: { provider: c.provider, model: c.model, ...(c.effort !== undefined ? { effort: c.effort } : {}) } }));
   await executeAndRecord(
-    { pipeline, routing: autoRouting(router, getProvider, health), signal, synthesis: withSynthesis, onAttempt: trackAttempt, ...runTask },
+    {
+      pipeline,
+      routing: autoRouting(router, getProvider, health),
+      signal,
+      synthesis: withSynthesis,
+      onAttempt: trackAttempt,
+      baselineModel: settings.baselineModel,
+      ...runTask,
+    },
     res,
     agent,
     body,
@@ -1074,6 +1143,9 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
   // Le client (bouton « Arrêter », fenêtre fermée) coupe la connexion → on arrête le pipeline.
   const abort = new AbortController();
   res.on("close", () => abort.abort());
+  const started = Date.now();
+  meterCtx = { runId: randomUUID(), project: "" };
+  Object.assign(runState, { outcome: "error", tasks: 0, root: "", launchOk: undefined });
 
   try {
     // Sans mode explicite : manuel si un backend est imposé (CLI, anciens clients), sinon auto.
@@ -1086,6 +1158,22 @@ async function handleRun(req: IncomingMessage, res: ServerResponse): Promise<voi
     sseWrite(res, { type: "error", error: d });
   } finally {
     currentAttempt = null;
+    try {
+      usage().addRun({
+        runId: meterCtx.runId,
+        at: started,
+        project: meterCtx.project,
+        root: runState.root,
+        prompt,
+        mode: body.fix !== undefined ? "correction" : body.mode ?? "auto",
+        outcome: abort.signal.aborted && runState.outcome !== "done" ? "stopped" : runState.outcome,
+        durationMs: Date.now() - started,
+        tasks: runState.tasks,
+        ...(runState.launchOk !== undefined ? { launchOk: runState.launchOk } : {}),
+      });
+    } catch {
+      /* le registre ne doit jamais faire échouer un run */
+    }
     sseWrite(res, { type: "end" });
     res.end();
   }
@@ -1267,6 +1355,76 @@ async function handleWorkspaceOpen(req: IncomingMessage, res: ServerResponse): P
   const target = typeof body.path === "string" && body.path.length > 0 ? new Workspace(root).resolve(body.path) : root;
   await openDir(target, body.target === "vscode" ? "vscode" : "folder");
   sendJson(res, 200, { ok: true });
+}
+
+// ── Métriques (phase H) ─────────────────────────────────────────────────────
+
+async function handleUsage(url: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const settings = loadSettings();
+  if (url === "/api/usage/summary" && req.method === "GET") {
+    const raw = query(req).get("period");
+    const period: Period = raw === "day" || raw === "7d" || raw === "30d" || raw === "all" ? raw : "7d";
+    const since = periodStart(period);
+    const store = usage();
+    return sendJson(
+      res,
+      200,
+      summarize(store.calls(since), store.runs(since), {
+        baselineModel: settings.baselineModel,
+        period,
+        since,
+        budgetMonthly: settings.budgetMonthly,
+        budgetAlertPct: settings.budgetAlertPct,
+        spentThisMonth: store.billedSince(monthStart()),
+        quotas: store.quotas(),
+      }),
+    );
+  }
+  if (url === "/api/usage/prices" && req.method === "GET") {
+    return sendJson(res, 200, { reviewed: PRICES_REVIEWED, baselineModel: settings.baselineModel, table: priceTable() });
+  }
+  if (url === "/api/usage/export" && req.method === "GET") {
+    res.writeHead(200, {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="relay-usage-${new Date().toISOString().slice(0, 10)}.csv"`,
+    });
+    res.end(toCsv(usage().calls(0), settings.baselineModel));
+    return;
+  }
+  if (url === "/api/usage/reset" && req.method === "POST") {
+    usage().reset();
+    return sendJson(res, 200, { ok: true });
+  }
+  if (url === "/api/usage/balances" && req.method === "GET") return sendJson(res, 200, await fetchBalances());
+  return sendJson(res, 404, { error: "inconnu" });
+}
+
+/** Soldes des comptes qui les exposent (OpenRouter, DeepSeek) — non testés faute de clé. */
+async function fetchBalances(): Promise<Record<string, { ok: boolean; detail: string }>> {
+  const out: Record<string, { ok: boolean; detail: string }> = {};
+  const or = process.env["OPENROUTER_API_KEY"]?.trim();
+  if (or) {
+    try {
+      const r = (await (await fetch("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${or}` }, signal: AbortSignal.timeout(8000) })).json()) as {
+        data?: { usage?: number; limit?: number | null };
+      };
+      out["openrouter"] = { ok: true, detail: `utilisé $${(r.data?.usage ?? 0).toFixed(2)}${r.data?.limit ? ` / limite $${r.data.limit.toFixed(2)}` : ""}` };
+    } catch (e) {
+      out["openrouter"] = { ok: false, detail: describeError(e).detail };
+    }
+  }
+  const ds = process.env["DEEPSEEK_API_KEY"]?.trim();
+  if (ds) {
+    try {
+      const r = (await (await fetch("https://api.deepseek.com/user/balance", { headers: { Authorization: `Bearer ${ds}` }, signal: AbortSignal.timeout(8000) })).json()) as {
+        balance_infos?: Array<{ currency: string; total_balance: string }>;
+      };
+      out["deepseek"] = { ok: true, detail: (r.balance_infos ?? []).map((b) => `solde ${b.total_balance} ${b.currency}`).join(", ") || "solde inconnu" };
+    } catch (e) {
+      out["deepseek"] = { ok: false, detail: describeError(e).detail };
+    }
+  }
+  return out;
 }
 
 // ── Terminal intégré (phase G) ──────────────────────────────────────────────
@@ -1461,6 +1619,7 @@ function handler(req: IncomingMessage, res: ServerResponse): void {
       if (url === "/api/workspace/runs" && req.method === "GET") return handleWorkspaceRuns(res);
       if (url.startsWith("/api/ollama/")) return await handleOllama(url, req, res);
       if (url.startsWith("/api/terminal/")) return await handleTerminal(url, req, res);
+      if (url.startsWith("/api/usage/")) return await handleUsage(url, req, res);
       if (url === "/api/projects" && req.method === "GET") return handleProjects(res);
       if (url === "/api/projects/detail" && req.method === "GET") return handleProjectDetail(req, res);
       if (url === "/api/projects/memory" && req.method === "PUT") return await handleProjectMemory(req, res);

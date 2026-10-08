@@ -138,7 +138,7 @@ export function MetricsBar({ m }: { m: PipelineMetrics | null }): React.JSX.Elem
     <section className="metrics">
       <Metric label="Payé" value={v(money(m?.totalBilledCost ?? 0))} tone="good" />
       <Metric label="Équivalent API" value={v(money(m?.totalReferenceCost ?? 0))} />
-      <Metric label="Si tout en deep" value={v(money(m?.baselineCost ?? 0))} />
+      <Metric label="Si tout en référence" value={v(money(m?.baselineCost ?? 0))} />
       <Metric label="Économie" value={v(`${(m?.savings ?? 0).toFixed(1)} %`)} tone="good" />
       <Metric label="Dont orchestration" value={v(money(m?.overheadReferenceCost ?? 0))} />
       <Metric label="Tokens" value={v(String(m?.totalTokens ?? 0))} />

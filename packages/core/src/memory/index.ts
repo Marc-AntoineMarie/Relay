@@ -69,6 +69,7 @@ export async function updateProjectMemory(opts: {
     system: MEMORY_SYSTEM,
     messages: [{ role: "user", content: memoryPrompt(opts) }],
     maxTokens: 4_000,
+    tag: { purpose: "memory" },
   })) {
     if (chunk.type === "text") out.text += chunk.text;
     else if (chunk.type === "usage") {

@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CAP_LABEL, Segmented } from "./components";
 import { OllamaSection } from "./OllamaSettings";
+import { MetricsSection } from "./Dashboard";
 import { BILLING, useRelay, type Relay, type SettingsSection } from "./store";
 import { TIERS, type CommandPolicy, type PoolAccount, type ProviderReadiness, type Strategy, type Tier } from "./types";
 
@@ -13,6 +14,7 @@ const SECTIONS: Array<{ id: SettingsSection; label: string; hint: string }> = [
   { id: "accounts", label: "Comptes et clés", hint: "connecter, tester, supprimer" },
   { id: "models", label: "Modèles", hint: "catalogue et pool automatique" },
   { id: "routing", label: "Routage", hint: "stratégie, plafonds, budget" },
+  { id: "metrics", label: "Métriques", hint: "prix, référence, budget mensuel" },
   { id: "ollama", label: "Ollama", hint: "modèles gratuits, local ou VPS" },
   { id: "general", label: "Général", hint: "agents, mémoire, questions, disposition" },
 ];
@@ -53,6 +55,7 @@ export function SettingsView({ onResetLayout }: { onResetLayout: () => void }): 
           {section === "models" ? <ModelsSection r={r} /> : null}
           {section === "routing" ? <RoutingSection r={r} /> : null}
           {section === "ollama" ? <OllamaSection /> : null}
+          {section === "metrics" ? <MetricsSection /> : null}
           {section === "general" ? <GeneralSection onResetLayout={onResetLayout} /> : null}
         </div>
       </div>

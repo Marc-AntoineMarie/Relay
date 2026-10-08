@@ -12,7 +12,7 @@
  */
 import OpenAI from "openai";
 import { abortError, defaultRegistry, kindFromStatus, ModelRegistry, ProviderRequestError, shouldTryAnotherModel } from "@relay/core";
-import type {
+import type { RateLimitSnapshot,
   BillingMode,
   CompletionChunk,
   CompletionRequest,
@@ -134,10 +134,12 @@ export class OpenAICompatibleProvider implements Provider {
       };
       try {
         const params = buildChatParams({ ...request, model }, this.structuredMode, useReasoning);
-        const stream = await this.client.chat.completions.create(params, { signal: control.signal });
+        // Chrono avant l'envoi : la file d'attente du fournisseur (souvent avant les en-têtes) compte.
+        const sent = Date.now();
+        const { data: stream, response } = await this.client.chat.completions.create(params, { signal: control.signal }).withResponse();
+        const quota = readRateLimits(response.headers);
         let usage: CompletionChunk | undefined;
         let stop: StopReason = "end";
-        const sent = Date.now();
         let firstChunkMs: number | undefined;
 
         for await (const chunk of stream) {
@@ -167,6 +169,7 @@ export class OpenAICompatibleProvider implements Provider {
         if (control.signal.aborted) throw new Error("flux interrompu");
         if (!emitted && model !== request.model) yield { type: "model", model, fallbackFrom: request.model };
         if (firstChunkMs !== undefined) yield { type: "latency", firstChunkMs };
+        if (quota !== undefined) yield { type: "quota", quota };
         if (usage !== undefined) yield usage;
         yield { type: "stop", reason: stop };
         return;
@@ -202,6 +205,26 @@ export class OpenAICompatibleProvider implements Provider {
 
     throw lastError ?? new ProviderRequestError("unknown", "aucun modèle n'a répondu", this.name, request.model);
   }
+}
+
+/** En-têtes x-ratelimit-* (Groq, OpenAI, NVIDIA… quand ils les envoient). */
+export function readRateLimits(headers: Headers): RateLimitSnapshot | undefined {
+  const num = (k: string): number | undefined => {
+    const v = headers.get(k);
+    const n = v === null ? Number.NaN : Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const snap: RateLimitSnapshot = {};
+  const set = <K extends keyof RateLimitSnapshot>(k: K, v: RateLimitSnapshot[K] | undefined): void => {
+    if (v !== undefined) snap[k] = v;
+  };
+  set("limitRequests", num("x-ratelimit-limit-requests"));
+  set("remainingRequests", num("x-ratelimit-remaining-requests"));
+  set("resetRequests", headers.get("x-ratelimit-reset-requests") ?? undefined);
+  set("limitTokens", num("x-ratelimit-limit-tokens"));
+  set("remainingTokens", num("x-ratelimit-remaining-tokens"));
+  set("resetTokens", headers.get("x-ratelimit-reset-tokens") ?? undefined);
+  return Object.keys(snap).length > 0 ? snap : undefined;
 }
 
 /** Construit les paramètres Chat Completions (fonction pure, testable). */

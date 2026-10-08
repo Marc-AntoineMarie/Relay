@@ -20,7 +20,7 @@ Desktop, web et mobile.
 - `web` : dashboard React + Vite (v0.3)
 - `desktop` : Electron (v0.4)
 - Tests : Vitest — chaque composant a ses tests
-- Métriques : SQLite (better-sqlite3)
+- Métriques : SQLite via `node:sqlite` (intégré à Node et à Electron, aucun module natif)
 
 ## Langue
 
@@ -88,8 +88,9 @@ quasi-gratuit** (registre + heuristique, jamais un gros appel LLM).
 ## Dépendances
 
 - **Zod** : validation des sorties du décomposeur et des résultats de tâches.
-- **better-sqlite3** : métriques locales, historique des pipelines — **à partir de la v0.2**
-  (dépendance native). En v0.1, métriques en mémoire + affichage CLI.
+- **SQLite** : métriques locales, historique des appels et des runs (`.relay/relay.db`) via
+  `node:sqlite`, intégré à Node 22+ et à Electron — pas de better-sqlite3 (module natif à
+  recompiler pour Electron).
 - Les adaptateurs LLM (Anthropic, OpenAI, Ollama) sont écrits par nous, directement
   sur les SDK officiels (`@anthropic-ai/sdk`, `openai`). Pas de couche d'abstraction
   tierce — le cœur du produit c'est l'orchestration, on contrôle chaque ligne.

@@ -15,6 +15,9 @@ import type {
   ConversationMessage,
   ProjectInfo,
   OllamaInfo,
+  Period,
+  PriceRow,
+  UsageSummary,
   RunDir,
   WorkspaceFile,
 } from "./types";
@@ -173,6 +176,12 @@ export async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator
 
 /** Le modèle en cours est trop lent : on passe au suivant (repli du routeur). */
 export const skipModel = (): Promise<{ skipped: boolean; model?: string }> => call("/api/run/skip", post({}));
+
+export const getUsage = (period: Period): Promise<UsageSummary> => call(`/api/usage/summary?period=${period}`);
+export const getPrices = (): Promise<{ reviewed: string; baselineModel: string; table: PriceRow[] }> => call("/api/usage/prices");
+export const resetUsage = (): Promise<{ ok: boolean }> => call("/api/usage/reset", post({}));
+export const getBalances = (): Promise<Record<string, { ok: boolean; detail: string }>> => call("/api/usage/balances");
+export const USAGE_EXPORT_URL = "/api/usage/export";
 
 export const answerApproval = (key: string, ok: boolean): Promise<{ found: boolean }> =>
   call("/api/approve", post({ key, ok }));

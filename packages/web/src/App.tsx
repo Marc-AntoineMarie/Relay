@@ -18,6 +18,7 @@ import {
   RoutingPanel,
 } from "./panels";
 import { SettingsView } from "./Settings";
+import { DashboardView } from "./Dashboard";
 import { ApprovalBar, ExecPanel, FilesPanel, PreviewPanel } from "./workspace-panels";
 import { BILLING, load, RelayProvider, save, useRelay } from "./store";
 
@@ -124,6 +125,9 @@ function Shell(): React.JSX.Element {
               Manuel · {r.selected.label} · {BILLING[r.selected.billing]}
             </span>
           ) : null}
+          <button className="ghost-btn" onClick={r.openDashboard} title="Coûts, économies, comptes, activité">
+            Tableau de bord
+          </button>
           <button className="ghost-btn" onClick={() => r.openSettings()} title="Comptes, clés, modèles, routage">
             ⚙ Réglages
           </button>
@@ -150,6 +154,7 @@ function Shell(): React.JSX.Element {
       </div>
 
       <SettingsView onResetLayout={resetLayout} />
+      <DashboardView />
     </div>
   );
 }

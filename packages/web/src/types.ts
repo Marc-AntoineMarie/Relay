@@ -30,6 +30,80 @@ export interface Settings {
   projectMemory: boolean;
   maxCallMinutes: number;
   autoFix: boolean;
+  baselineModel: string;
+  priceOverrides: Record<string, { inputPerM: number; outputPerM: number }>;
+  budgetMonthly: number | null;
+  budgetAlertPct: number;
+}
+
+export type Period = "day" | "7d" | "30d" | "all";
+
+export interface MoneyRow {
+  calls: number;
+  failed: number;
+  tokens: number;
+  billed: number;
+  reference: number;
+  baseline: number;
+}
+
+export interface QuotaSnapshot {
+  limitRequests?: number;
+  remainingRequests?: number;
+  resetRequests?: string;
+  limitTokens?: number;
+  remainingTokens?: number;
+  resetTokens?: string;
+  at: number;
+}
+
+export interface RunRow extends MoneyRow {
+  runId: string;
+  at: number;
+  project: string;
+  root: string;
+  prompt: string;
+  mode: string;
+  outcome: string;
+  durationMs: number;
+  tasks: number;
+  launchOk?: boolean;
+}
+
+export interface UsageSummary {
+  period: Period;
+  since: number;
+  baselineModel: string;
+  totals: MoneyRow & {
+    inputTokens: number;
+    outputTokens: number;
+    thinkingTokens: number;
+    durationMs: number;
+    rateLimited: number;
+    routingSavings: number;
+    totalSavings: number;
+    runs: number;
+    runsDone: number;
+    launchChecked: number;
+    launchOk: number;
+  };
+  byProvider: Array<MoneyRow & { provider: string; billing: Billing; rateLimited: number; medianFirstChunkMs: number | null; quota?: QuotaSnapshot }>;
+  byModel: Array<MoneyRow & { provider: string; model: string; medianFirstChunkMs: number | null }>;
+  byProject: Array<MoneyRow & { project: string; runs: number; lastAt: number }>;
+  byPurpose: Array<MoneyRow & { purpose: string }>;
+  daily: Array<MoneyRow & { day: string }>;
+  recentRuns: RunRow[];
+  budget: { monthly: number | null; spentThisMonth: number; alertPct: number; alert: boolean; exceeded: boolean };
+}
+
+export interface PriceRow {
+  family: string;
+  level: Tier;
+  inputPerM: number;
+  outputPerM: number;
+  source: "catalogue" | "personnalisé";
+  defaultInputPerM: number;
+  defaultOutputPerM: number;
 }
 
 export interface MachineInfo {

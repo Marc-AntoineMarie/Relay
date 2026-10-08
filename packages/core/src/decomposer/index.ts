@@ -154,6 +154,7 @@ ${JSON.stringify(schema)}`,
       format: { schema },
       maxTokens,
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+      tag: { purpose: "plan" },
     });
     const { text, stop } = reply;
     usage.inputTokens += reply.inputTokens;
