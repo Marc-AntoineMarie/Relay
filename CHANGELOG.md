@@ -11,7 +11,25 @@ Format inspiré de [Keep a Changelog](https://keepachangelog.com/fr/), versions 
 
 ## [Non publié] — 0.1.0 en cours
 
-### Phase H — métriques sérieuses et tableau de bord · 2026-10-08 · *en attente de validation*
+### Phase I — activité visible en direct · 2026-10-09 · *en attente de validation*
+
+Commit `b55140f` + docs · détail : [contribution](docs/contributions/2026-10-09-phase-i-activite-visible.md)
+
+#### Ajouté
+
+- **Graphe animé** : tâche en cours (bordure qui circule, halo), son activité et son chrono
+  (attend, rédige *n* caractères, crée un fichier, lance une commande), effets de fin, badge des
+  modèles essayés.
+- **Décisions du routeur en direct** : modèles abandonnés (et pourquoi), en cours, réussis, replis
+  prévus.
+- **Lien graphe ↔ journal** : journal filtré par tâche depuis une décision ou le détail, pastilles
+  #tâche cliquables dans le journal, surlignage de la tâche sélectionnée.
+
+#### Corrigé
+
+- Le texte des modèles n'arrivait qu'à la fin de chaque réponse : il est maintenant streamé.
+
+### Phase H — métriques sérieuses et tableau de bord · 2026-10-08 · validée
 
 Commit `46a2946` + docs · détail : [contribution](docs/contributions/2026-10-08-phase-h-metriques.md)
 

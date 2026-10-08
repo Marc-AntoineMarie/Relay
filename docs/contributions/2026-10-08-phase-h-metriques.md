@@ -1,6 +1,6 @@
 # 2026-10-08 — Phase H : métriques sérieuses et tableau de bord
 
-- **Statut** : en attente de validation par l'utilisateur
+- **Statut** : validée (« go fait I »)
 - **Commits** : `46a2946` · docs
 
 ## Demande

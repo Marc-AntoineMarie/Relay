@@ -1,7 +1,8 @@
 # HANDOFF — reprendre Relay
 
 > **À lire en premier dans toute nouvelle session.** Mis à jour à chaque contribution.
-> Dernière mise à jour : **2026-10-08** — fin de la **phase H**, en attente de validation.
+> Dernière mise à jour : **2026-10-09** — fin de la **phase I**, en attente de validation. Toutes les
+> phases prévues (A → I) sont faites ; la suite = les idées notées (voir « proposé » et la mémoire `relay-ideas-later`).
 
 ## En une phrase
 
@@ -24,16 +25,19 @@ dossier par run, lance des commandes (tests) et corrige ; l'utilisateur voit et 
 | E | **projets et conversations** : noms simples + emplacement, conversation et historique par projet, **questions de cadrage**, **mémoire** (`RELAY.md` par projet, mémoire globale), activité en direct dans le fil | ✅ validé |
 | F | **Ollama intégré** (machine, installation sans mot de passe, serveur, modèles, **VPS par tunnel SSH**, guide Oracle Always Free, Ollama Cloud) + comptes **NVIDIA**, Cerebras, Mistral, Hugging Face + lancements vérifiés (commande exacte, `timeout 5`) | ✅ validé |
 | G | **terminal intégré** : xterm.js + pont pty Python (pas de module natif) dans le dossier du projet, sans clés API, « Erreur → Relay » / « → Conversation » ; serveur limité à la machine locale | ✅ validé |
-| **H** | **métriques sérieuses + tableau de bord** (registre SQLite de chaque appel, payé / équivalent / référence / économie justifiés, quotas des comptes, budget mensuel, prix et référence réglables) | ✅ codé et testé, **en attente de validation** |
+| H | **métriques sérieuses + tableau de bord** (registre SQLite de chaque appel, payé / équivalent / référence / économie justifiés, quotas des comptes, budget mensuel, prix et référence réglables) | ✅ validé |
 | ~~H (prévu)~~ | ~~métriques sérieuses~~ : chaque chiffre justifié (formule, source et date des prix), Réglages › Métriques (baseline, table de prix, orchestration incluse ou non), historique (SQLite, v0.2), quotas lus chez les fournisseurs (en-têtes `x-ratelimit-*`, soldes OpenRouter/DeepSeek, compteurs locaux Gemini) | à faire |
-| I | **activité visible** : animation du graphe et des décisions du routeur, liée au journal (promise ; une partie est déjà dans la carte « en direct » de la Conversation) | à faire |
+| **I** | **activité visible** : graphe animé (activité + chrono par tâche), décisions du routeur en direct (modèles abandonnés / en cours / prévus), lien graphe ↔ journal, texte des modèles streamé | ✅ codé et testé en réel, **en attente de validation** |
 | plus tard | **skills** (recettes réutilisables, façon Claude Code) | idée |
 | proposé | **mémoire par expériences** (inspirée de Hindsight) : retenir les erreurs corrigées et leurs causes, les contraintes de la machine, la lenteur des modèles ; les rappeler quand c'est pertinent ; backend Hindsight optionnel plus tard | voir `docs/INSPIRATIONS.md` |
 | proposé | **accueil et dashboard inspirés de Paperclip** : vue d'ensemble (projets, dépenses, activité), page Coûts avec alertes, fil d'activité, galerie d'artefacts, recherche, mobile | à fusionner avec H (métriques) et I (activité) |
 
 Ordre recommandé à l'utilisateur : E → F → G → H → I (il peut le changer).
 
-**Prochaine action** : attendre la validation de la phase H, puis I (animation de l'activité). Idées à ressortir à l'utilisateur au bon moment (skills/shark
+**Prochaine action** : attendre la validation de la phase I, puis présenter les idées notées à
+l'utilisateur pour choisir la suite : (1) skills et `/shark` dans Relay (pitcher Relay avec Relay),
+(2) comparaison du même prompt avec et sans Relay (registre d'usage de la phase H), (3) méthode
+d'efficacité (modèle fort pour le plan et la revue, tests de comportement, mémoire par expériences). Idées à ressortir à l'utilisateur au bon moment (skills/shark
 dans Relay, comparaison avec/sans Relay, méthode d'efficacité) : voir la mémoire `relay-ideas-later`
 et la section « proposé » ci-dessous.
 
